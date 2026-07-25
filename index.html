@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="uz">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bozor Narxlari — narx taxtasi</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;0,9..144,900;1,9..144,500&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="index.css">
+</head>
+
+<body>
+
+    <!-- decorative ikat-inspired backdrop, purely visual -->
+    <svg class="bg-motif" viewBox="0 0 400 400" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+        <defs>
+            <pattern id="ikat" width="80" height="80" patternUnits="userSpaceOnUse">
+                <path d="M40 4 L64 40 L40 76 L16 40 Z" fill="none" stroke="currentColor" stroke-width="1.4" />
+                <circle cx="40" cy="40" r="5" fill="currentColor" />
+            </pattern>
+        </defs>
+        <rect width="400" height="400" fill="url(#ikat)" />
+    </svg>
+
+    <div class="wrap">
+
+        <header id="mainHeader">
+            <div class="eyebrow">Toshkent bozorlari</div>
+            <h1>Bozor <em>narxlari</em></h1>
+            <div class="subtitle">Har kungi narxlarni kiriting, bozorlar bo'yicha solishtiring va o'zgarish
+                tendensiyasini kuzating &mdash; sabzavot, meva va boshqa mahsulotlar bo'yicha, rasmlari bilan.</div>
+            <div class="today-badge" id="todayBadge"></div>
+            <button class="theme-toggle" id="themeToggle" title="Tungi rejim"
+                aria-label="Tungi rejimni almashtirish">🌙</button>
+            <div class="produce-strip" aria-hidden="true">
+                <div class="produce-strip-track">
+                    <span>🥔</span><span>🍅</span><span>🍇</span><span>🥕</span><span>🍉</span><span>🧅</span><span>🍎</span><span>🥒</span><span>🍌</span><span>🍆</span><span>🍒</span><span>🧄</span>
+                    <span>🥔</span><span>🍅</span><span>🍇</span><span>🥕</span><span>🍉</span><span>🧅</span><span>🍎</span><span>🥒</span><span>🍌</span><span>🍆</span><span>🍒</span><span>🧄</span>
+                </div>
+            </div>
+        </header>
+
+        <section class="stats-row" id="statsRow"></section>
+        <div id="dishTipWrap"></div>
+
+        <nav class="tabs" id="categoryTabs">
+            <button class="tab active" data-cat="">
+                <span class="tab-icon">🧺</span> Barchasi
+            </button>
+            <button class="tab" data-cat="sabzavot">
+                <span class="tab-icon">🥕</span> Sabzavotlar
+            </button>
+            <button class="tab" data-cat="meva">
+                <span class="tab-icon">🍇</span> Mevalar
+            </button>
+            <button class="tab" data-cat="gosht-sut">
+                <span class="tab-icon">🥩</span> Go'sht &amp; sut
+            </button>
+            <button class="tab" data-cat="don">
+                <span class="tab-icon">🌾</span> Don mahsulotlari
+            </button>
+            <button class="tab" data-cat="ziravor">
+                <span class="tab-icon">🌿</span> Ziravor &amp; ko'kat
+            </button>
+            <button class="tab" data-cat="boshqa">
+                <span class="tab-icon">📦</span> Boshqa
+            </button>
+            <span class="tab-indicator" id="tabIndicator"></span>
+        </nav>
+
+        <div class="toolbar">
+            <div class="filter-row">
+                <input type="search" id="searchBox" class="search" placeholder="Mahsulot qidirish...">
+                <select class="filter" id="marketFilter">
+                    <option value="">Barcha bozorlar</option>
+                </select>
+                <select class="filter" id="sortFilter">
+                    <option value="name">Nomi bo'yicha</option>
+                    <option value="recent">So'nggi qo'shilgan</option>
+                    <option value="price-desc">Narx: qimmatdan</option>
+                    <option value="price-asc">Narx: arzondan</option>
+                </select>
+            </div>
+            <div class="btn-row">
+                <button class="ghost-btn" id="exportBtn" title="CSV formatida yuklab olish">⭳ Eksport</button>
+                <button class="add-btn" id="toggleAdd">+ Narx qo'shish</button>
+            </div>
+        </div>
+
+        <div class="panel" id="addPanel">
+            <div class="panel-inner">
+                <div class="panel-title">Yangi narx kiritish</div>
+                <div class="form-grid">
+                    <div class="field">
+                        <label>Toifa</label>
+                        <select id="inCategory">
+                            <option value="sabzavot">🥕 Sabzavot</option>
+                            <option value="meva">🍇 Meva</option>
+                            <option value="gosht-sut">🥩 Go'sht / sut</option>
+                            <option value="don">🌾 Don mahsuloti</option>
+                            <option value="ziravor">🌿 Ziravor / ko'kat</option>
+                            <option value="boshqa">📦 Boshqa</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>Bozor</label>
+                        <select id="inMarket">
+                            <option>Chorsu bozori</option>
+                            <option>Oloy bozori</option>
+                            <option>Qo'ylik bozori</option>
+                            <option>Farhod bozori</option>
+                            <option>Beshqozon bozori</option>
+                            <option>Boshqa...</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>Mahsulot</label>
+                        <input id="inProduct" list="productList" placeholder="Masalan: kartoshka">
+                        <datalist id="productList"></datalist>
+                    </div>
+                    <div class="field">
+                        <label>Narx (so'm)</label>
+                        <input id="inPrice" type="number" min="0" step="500" placeholder="15000">
+                    </div>
+                    <div class="field">
+                        <label>Birlik</label>
+                        <select id="inUnit">
+                            <option value="kg">kg</option>
+                            <option value="dona">dona</option>
+                            <option value="litr">litr</option>
+                            <option value="bog'">bog'</option>
+                        </select>
+                    </div>
+                    <button class="submit-btn" id="submitEntry">Qo'shish</button>
+                </div>
+                <div class="form-note">Ma'lumotlar faqat sizning hisobingizda saqlanadi va boshqalarga ko'rinmaydi.
+                </div>
+            </div>
+        </div>
+
+        <div class="board" id="board"></div>
+
+        <footer>
+            <span>Narx taxtasi &middot; shaxsiy kuzatuv vositasi</span>
+            <button id="resetBtn">Barcha ma'lumotlarni tozalash</button>
+        </footer>
+    </div>
+
+    <div class="toast" id="toast"></div>
+    <div class="basket-bar" id="basketBar"></div>
+
+    <script src="index.js"></script>
+</body>
+
+</html>
