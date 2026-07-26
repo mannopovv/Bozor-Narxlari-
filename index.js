@@ -173,10 +173,43 @@
     });
     loadTheme();
 
-    function showToast(msg) {
-        toast.textContent = msg;
+    // narx muvaffaqiyatli qo'shilganda tugma atrofida yengil zarrachalar sochiladi
+    function burstParticles(anchorEl) {
+        const rect = anchorEl.getBoundingClientRect();
+        const colors = ['var(--saffron)', 'var(--teal)', 'var(--pomegranate)', 'var(--olive)'];
+        for (let i = 0; i < 10; i++) {
+            const p = document.createElement('span');
+            p.className = 'burst-particle';
+            const angle = (Math.PI * 2 * i) / 10 + Math.random() * 0.4;
+            const dist = 40 + Math.random() * 35;
+            p.style.setProperty('--dx', `${Math.cos(angle) * dist}px`);
+            p.style.setProperty('--dy', `${Math.sin(angle) * dist}px`);
+            p.style.background = colors[i % colors.length];
+            p.style.left = (rect.left + rect.width / 2) + 'px';
+            p.style.top = (rect.top + rect.height / 2) + 'px';
+            document.body.appendChild(p);
+            p.addEventListener('animationend', () => p.remove());
+        }
+    }
+
+    function showToast(msg, actionLabel, actionFn) {
+        toast.innerHTML = '';
+        const text = document.createElement('span');
+        text.textContent = msg;
+        toast.appendChild(text);
+        if (actionLabel && actionFn) {
+            const btn = document.createElement('button');
+            btn.className = 'toast-action';
+            btn.textContent = actionLabel;
+            btn.addEventListener('click', () => {
+                actionFn();
+                toast.classList.remove('show');
+            });
+            toast.appendChild(btn);
+        }
         toast.classList.add('show');
-        setTimeout(() => toast.classList.remove('show'), 2200);
+        clearTimeout(showToast._t);
+        showToast._t = setTimeout(() => toast.classList.remove('show'), actionLabel ? 5000 : 2200);
     }
 
     function fmt(n) {
@@ -218,14 +251,19 @@
     }
 
     // ---------- storage ----------
+    const PERSONAL_KEY = 'bozor-entries-v2';
+    const SHARED_KEY = 'bozor-entries-shared-v1';
+    let sharedMode = false;
+
     async function loadEntries() {
         try {
-            const res = await window.storage.get('bozor-entries-v2', false);
+            const key = sharedMode ? SHARED_KEY : PERSONAL_KEY;
+            const res = await window.storage.get(key, sharedMode);
             entries = res && res.value ? JSON.parse(res.value) : [];
         } catch (e) {
             entries = [];
         }
-        if (entries.length === 0) {
+        if (entries.length === 0 && !sharedMode) {
             entries = seedData();
             await saveEntries();
         }
@@ -234,7 +272,8 @@
 
     async function saveEntries() {
         try {
-            await window.storage.set('bozor-entries-v2', JSON.stringify(entries), false);
+            const key = sharedMode ? SHARED_KEY : PERSONAL_KEY;
+            await window.storage.set(key, JSON.stringify(entries), sharedMode);
         } catch (e) {
             showToast("Saqlashda xatolik yuz berdi");
         }
@@ -556,8 +595,10 @@
             const productIcon = PRODUCT_ICONS[p] || DEFAULT_ICON;
             const softColor = hexToRgba(meta.color, 0.16);
             const inBasket = basket.has(p);
+            const isFresh = (Date.now() - d.latestTs) < 2 * 60 * 1000;
 
-            return `<div class="tag" style="--cat-color:${meta.color}; --cat-color-soft:${softColor}; animation-delay:${Math.min(idx * 0.05, 0.5)}s">
+            return `<div class="tag" data-product="${p}" style="--cat-color:${meta.color}; --cat-color-soft:${softColor}; animation-delay:${Math.min(idx * 0.05, 0.5)}s">
+        ${isFresh ? '<span class="fresh-badge">✦ Yangi</span>' : ''}
         <span class="tag-cat-icon" title="${meta.label}">${meta.icon}</span>
         <div class="tag-header">
           <div class="tag-image">${productIcon}</div>
@@ -582,6 +623,19 @@
         board.querySelectorAll('.basket-btn').forEach(btn => {
             btn.addEventListener('click', () => toggleBasket(btn.dataset.product, Number(btn.dataset.price), btn.dataset.unit));
         });
+
+        board.querySelectorAll('.tag').forEach(attachTilt);
+    }
+
+    // sichqoncha harakatiga qarab yengil 3D moyillik (tilt) effekti
+    function attachTilt(card) {
+        card.addEventListener('mousemove', (e) => {
+            const rect = card.getBoundingClientRect();
+            const px = (e.clientX - rect.left) / rect.width - 0.5;
+            const py = (e.clientY - rect.top) / rect.height - 0.5;
+            card.style.transform = `perspective(600px) rotateX(${(-py * 5).toFixed(2)}deg) rotateY(${(px * 5).toFixed(2)}deg) translateY(-2px)`;
+        });
+        card.addEventListener('mouseleave', () => { card.style.transform = ''; });
     }
 
     // ---------- CSV export ----------
@@ -606,10 +660,213 @@
         showToast("CSV fayl yuklab olindi");
     }
 
+    // oddiy CSV qator ayiruvchisi — qo'shtirnoq ichidagi vergullarni hisobga oladi
+    function parseCsvLine(line) {
+        const out = [];
+        let cur = '', inQuotes = false;
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (inQuotes) {
+                if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+                else if (ch === '"') { inQuotes = false; }
+                else { cur += ch; }
+            } else {
+                if (ch === '"') inQuotes = true;
+                else if (ch === ',') { out.push(cur); cur = ''; }
+                else cur += ch;
+            }
+        }
+        out.push(cur);
+        return out;
+    }
+
+    async function importCsv(file) {
+        const text = await file.text();
+        const labelToCategory = {};
+        Object.entries(CATEGORY_META).forEach(([key, meta]) => { labelToCategory[meta.label] = key; });
+
+        const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(l => l.trim().length > 0);
+        if (lines.length < 2) { showToast("Faylda ma'lumot topilmadi"); return; }
+
+        let added = 0;
+        let nextId = entries.length ? Math.max(...entries.map(e => e.id)) + 1 : 1;
+        for (let i = 1; i < lines.length; i++) {
+            const cols = parseCsvLine(lines[i]);
+            if (cols.length < 6) continue;
+            const [dateStr, market, catLabel, product, priceStr, unit] = cols;
+            const price = parseFloat(String(priceStr).replace(/[^\d.,-]/g, '').replace(',', '.'));
+            if (!product || !market || !price || price <= 0) continue;
+            const category = labelToCategory[catLabel] || 'boshqa';
+            const ts = Date.parse(dateStr) || Date.now();
+            entries.push({ id: nextId++, market, product: product.trim(), category, price, unit: (unit || 'kg').trim(), ts });
+            added++;
+        }
+        if (added === 0) { showToast("Hech qanday to'g'ri qator topilmadi"); return; }
+        await saveEntries();
+        render();
+        showToast(`${added} ta narx import qilindi`);
+    }
+
+    // an'anaviy o'zbek taomlari — "Taomlar" bo'limi uchun
+    const DISHES = [
+        {
+            name: "Osh (Palov)", icon: "🍚",
+            ingredients: ["Guruch — 1 kg", "Mol yoki qo'y go'shti — 500 g", "Sabzi — 1 kg", "Piyoz — 3 dona", "Yog' — 300 ml", "Sarimsoq — 2 bosh", "Zira, tuz"],
+            steps: ["Qozonda yog'ni qizdirib, piyoz va go'shtni qovuring.", "Sabzini qo'shib, 10–15 daqiqa dimlang.", "Ustiga suv quyib, qaynatib, zira va tuz soling.", "Guruchni tekis yoyib, suv qo'shing va yopiq holda pishiring.", "Sarimsoqni ichiga botirib, 20 daqiqa dam olishga qo'ying."]
+        },
+        {
+            name: "Norin", icon: "🍜",
+            ingredients: ["Mol go'shti — 700 g", "Un — 400 g", "Piyoz — 2 dona", "Tuxum — 1 dona", "Qora qalampir, tuz"],
+            steps: ["Go'shtni suvda pishirib, sovutib mayda to'g'rang.", "Un, tuxum va tuzdan xamir qorib, yupqa yoying va tor-tor tilib qaynatib oling.", "Xamir tolalarini go'sht bilan aralashtiring.", "Ustiga mayda to'g'ralgan xom piyoz va qalampir sepib, sho'rva bilan tortiladi."]
+        },
+        {
+            name: "Mastava", icon: "🍲",
+            ingredients: ["Mol go'shti — 400 g", "Guruch — 150 g", "Kartoshka — 3 dona", "Sabzi — 2 dona", "Pomidor — 2 dona", "Piyoz — 1 dona"],
+            steps: ["Go'shtni suvda qaynatib sho'rva tayyorlang.", "Piyoz, sabzi va pomidorni qovurib sho'rvaga qo'shing.", "Kartoshkani kublab soling.", "Guruchni qo'shib, yumshaguncha qaynating."]
+        },
+        {
+            name: "Sho'rva", icon: "🍛",
+            ingredients: ["Qo'y yoki mol go'shti — 500 g", "Kartoshka — 4 dona", "Sabzi — 2 dona", "Piyoz — 2 dona", "Bulg'or qalampiri — 1 dona"],
+            steps: ["Go'shtni suvga solib qaynatib, ko'pigini olib turing.", "Piyoz, sabzi va qalampirni qo'shing.", "Kartoshkani yiriklab to'g'rab soling.", "Tuz va ziravorlar bilan yumshaguncha qaynating."]
+        },
+        {
+            name: "Lag'mon", icon: "🍜",
+            ingredients: ["Un — 500 g", "Mol go'shti — 400 g", "Bulg'or qalampiri — 2 dona", "Pomidor — 3 dona", "Sabzi, piyoz, sarimsoq"],
+            steps: ["Un va tuzli suvdan qattiq xamir qorib, cho'zib lag'mon tolasi tayyorlang va qaynatib oling.", "Go'shtni qovurib, sabzi, piyoz va qalampirni qo'shing.", "Pomidor va ziravorlar bilan qovurma-sho'rva tayyorlang.", "Tolalarni likobga solib, ustidan qovurma-sho'rvani quying."]
+        },
+        {
+            name: "Manti", icon: "🥟",
+            ingredients: ["Un — 500 g", "Mol yoki qo'y go'shti (qiyma) — 500 g", "Piyoz — 3 dona", "Dumba yog'i (ixtiyoriy)", "Tuz, qora qalampir"],
+            steps: ["Un, suv va tuzdan yumshoq xamir qorib, dam olishga qo'ying.", "Qiyma, mayda to'g'ralgan piyoz va ziravorlarni aralashtiring.", "Xamirni yupqa yoyib, kvadrat kesing va ichiga qiyma solib turing.", "Manti qozonida bug'da 40–45 daqiqa pishiring."]
+        },
+        {
+            name: "Somsa", icon: "🥐",
+            ingredients: ["Un — 500 g", "Mol go'shti (qiyma) — 400 g", "Piyoz — 3 dona", "Dumba yog'i", "Tuz, zira"],
+            steps: ["Xamirni un, suv, tuzdan qorib, qatlamli qilib yoying.", "Qiyma, mayda piyoz va ziravorlarni aralashtiring.", "Xamirga ichini solib, uchburchak shaklda buklang.", "Tandir yoki pechda oltin rang olguncha pishiring."]
+        },
+        {
+            name: "Achichuq salat", icon: "🥗",
+            ingredients: ["Pomidor — 4 dona", "Piyoz — 1 dona", "Ko'k dosita (ixtiyoriy)", "Tuz, achchiq qalampir"],
+            steps: ["Pomidorlarni yupqa doira qilib to'g'rang.", "Piyozni yarim halqa qilib to'g'rab, tuzlab ivitib oling.", "Hammasini aralashtirib, ustidan achchiq qalampir soling."]
+        },
+        {
+            name: "Qovurdoq", icon: "🍳",
+            ingredients: ["Mol yoki qo'y go'shti — 500 g", "Kartoshka — 4 dona", "Piyoz — 2 dona", "Bulg'or qalampiri", "Ziravorlar"],
+            steps: ["Go'shtni yog'da qizil bo'lguncha qovuring.", "Piyoz va qalampirni qo'shib qovurishda davom eting.", "Kartoshkani kublab qo'shing va yumshaguncha qovuring."]
+        },
+        {
+            name: "Chuchvara", icon: "🥟",
+            ingredients: ["Un — 400 g", "Mol go'shti (qiyma) — 300 g", "Piyoz — 2 dona", "Tuz, qora qalampir"],
+            steps: ["Xamirni qorib, yupqa yoyib kichik kvadratchalar kesing.", "Qiyma va piyozni aralashtirib, har biriga ozgina solib buklang.", "Qaynagan sho'rvada yoki suvda pishiring."]
+        },
+        {
+            name: "Dimlama", icon: "🍲",
+            ingredients: ["Mol go'shti — 500 g", "Kartoshka, karam, baqlajon, qalampir, pomidor — har biridan 2–3 dona", "Piyoz, sarimsoq"],
+            steps: ["Qozon tagiga go'shtni, ustiga qatlab sabzavotlarni tering.", "Tuz va ziravor sepib, kam suv bilan yopiq holda dimlang.", "Past olovda 1–1.5 soat pishiring."]
+        },
+        {
+            name: "Shashlik (kabob)", icon: "🍢",
+            ingredients: ["Qo'y yoki mol go'shti — 1 kg", "Piyoz — 2 dona", "Sirka yoki limon sharbati", "Tuz, zira, qora qalampir"],
+            steps: ["Go'shtni kublab, piyoz va ziravorlar bilan 2–3 soat marinadlang.", "Sixga taxminan bir xil bo'laklarda tizing.", "Cho'g'da ikki tomonini aylantirib, tayyor bo'lguncha qovuring."]
+        },
+        {
+            name: "Xonim", icon: "🌯",
+            ingredients: ["Un — 500 g", "Kartoshka yoki qiyma — 400 g", "Piyoz — 2 dona", "Yog', tuz"],
+            steps: ["Xamirni qorib, yupqa qilib yoying.", "Ustiga kartoshka pyuresi yoki qiymani tekis surting va rulon qilib o'rang.", "Bug'da taxminan 40 daqiqa pishiring.", "Kesib, ustidan qatiq yoki qaymoq bilan tortiladi."]
+        },
+        {
+            name: "Halim", icon: "🍲",
+            ingredients: ["Bug'doy (maydalangan) — 1 kg", "Mol go'shti — 500 g", "Piyoz — 2 dona", "Tuz, qora qalampir"],
+            steps: ["Bug'doy va go'shtni birga suvga solib, bir necha soat davomida past olovda qaynating.", "Go'sht suyulib, bug'doy bilan bir tekis pyuresimon holga kelguncha aralashtirib turing.", "Qovurilgan piyoz va yog' bilan sepib tortiladi."]
+        },
+        {
+            name: "Sumalak", icon: "🍮",
+            ingredients: ["Ko'karib chiqqan bug'doy ko'chati — 1 kg", "Un — 1 kg", "Yog' — 200 ml"],
+            steps: ["Bug'doy ko'chatini ezib, sharbatini ajratib oling.", "Sharbatga un qo'shib, suyuq xamirsimon aralashma tayyorlang.", "Qozonda tosh bilan birga, doim aralashtirib, juda past olovda 20 soatlab qaynatib pishiring."]
+        },
+        {
+            name: "Moshxo'rda", icon: "🍲",
+            ingredients: ["Mosh — 200 g", "Guruch — 100 g", "Mol go'shti — 300 g", "Kartoshka, sabzi, piyoz"],
+            steps: ["Go'shtni qaynatib sho'rva tayyorlang.", "Mosh, sabzi va piyozni qo'shib qaynatishda davom eting.", "Yarim pishganda guruch va kartoshkani solib, yumshaguncha qaynating."]
+        },
+        {
+            name: "Moshkichiri", icon: "🍚",
+            ingredients: ["Mosh — 200 g", "Guruch — 200 g", "Mol go'shti — 300 g", "Piyoz, yog'"],
+            steps: ["Go'shtni yog'da qovurib, piyoz qo'shing.", "Moshni solib biroz qovuring va suv qo'shing.", "Guruchni ustiga solib, palovga o'xshab yopiq holda dimlab pishiring."]
+        },
+        {
+            name: "Qozon kabob", icon: "🥘",
+            ingredients: ["Qo'y yoki mol go'shti — 1 kg", "Kartoshka — 1 kg", "Piyoz — 3 dona", "Yog', ziravorlar"],
+            steps: ["Qozon tagiga yog' surtib, go'sht, piyoz va kartoshkani qatlab tering.", "Tuz va ziravor sepib, qopqog'ini yopib, past olovda o'z sharbatida pishiring."]
+        },
+        {
+            name: "To'qmoch oshi", icon: "🍜",
+            ingredients: ["Un — 300 g", "Mol go'shti — 400 g", "Sabzi, piyoz, kartoshka"],
+            steps: ["Un va suvdan xamir qorib, yupqa yoying va mayin tolalarga tilib qaynatib oling (to'qmoch).", "Go'sht va sabzavotlardan sho'rva tayyorlang.", "Tolalarni sho'rvaga solib, birga issiq holda tortiladi."]
+        },
+        {
+            name: "Bo'g'irsoq", icon: "🍩",
+            ingredients: ["Un — 500 g", "Xamirturush yoki soda", "Sut yoki suv, tuxum", "Qovurish uchun yog'"],
+            steps: ["Yumshoq xamir qorib, biroz dam olishga qo'ying.", "Kichik bo'lakchalarga bo'lib, yumaloq yoki romb shaklga keltiring.", "Qaynagan yog'da ikki tomoni oltin rang olguncha qovuring."]
+        },
+        {
+            name: "Hasip", icon: "🌭",
+            ingredients: ["Guruch yoki jigar — 300 g", "Tozalangan mol ichagi", "Piyoz, yog', ziravorlar"],
+            steps: ["Guruch yoki jigarni mayda piyoz va ziravorlar bilan aralashtiring.", "Aralashmani tozalangan ichakka bo'sh joy qoldirib to'ldiring.", "Suvda qaynatib, so'ng biroz qovurib tortiladi."]
+        },
+        {
+            name: "Chalop", icon: "🥛",
+            ingredients: ["Qatiq — 1 l", "Sovuq suv — 500 ml", "Bodring — 1 dona", "Ukrop, tuz"],
+            steps: ["Qatiqni sovuq suv bilan suyultiring.", "Mayda to'g'ralgan bodring va ukropni qo'shing.", "Tuzlab, muzlatib yoki muz solib xizmat qiling — yozgi sovuq taom."]
+        },
+        {
+            name: "Nishalda", icon: "🍦",
+            ingredients: ["Tuxum oqi — 4 dona", "Shakar — 300 g", "Qizilmiya ildizi qaynatmasi"],
+            steps: ["Tuxum oqini shakar bilan ko'pikli, oq holga kelguncha uzoq chirping.", "Qizilmiya qaynatmasini asta-sekin qo'shib, chirpishda davom eting.", "Yumshoq, havodor desert holatiga kelganda tayyor."]
+        },
+        {
+            name: "Tuxum barak", icon: "🥟",
+            ingredients: ["Un — 300 g", "Tuxum — 5 dona", "Sut, tuz"],
+            steps: ["Un va suvdan yupqa xamir yoyib, kvadrat bo'laklarga kesing.", "Har biriga xom tuxum-sut aralashmasidan quyib, uchburchak qilib buklang.", "Qaynagan suvda pishirib, ustidan yog' bilan tortiladi."]
+        }
+    ];
+
     // ---------- events ----------
     $('#toggleAdd').addEventListener('click', () => {
         $('#addPanel').classList.toggle('open');
     });
+
+    $('#toggleRecipes').addEventListener('click', () => {
+        $('#recipesPanel').classList.toggle('open');
+    });
+
+    function renderRecipes() {
+        const grid = $('#recipeGrid');
+        grid.innerHTML = DISHES.map((d, i) => `
+      <div class="recipe-card" style="animation-delay:${Math.min(i * 0.04, 0.4)}s">
+        <div class="recipe-card-head">
+          <span class="recipe-icon">${d.icon}</span>
+          <span class="recipe-name">${d.name}</span>
+          <span class="recipe-chevron">▼</span>
+        </div>
+        <div class="recipe-body">
+          <div class="recipe-body-inner">
+            <div class="recipe-section">
+              <div class="recipe-section-title">Kerakli mahsulotlar</div>
+              <ul class="recipe-ingredients">${d.ingredients.map(x => `<li>${x}</li>`).join('')}</ul>
+              <div class="recipe-section-title">Tayyorlash</div>
+              <ol class="recipe-steps">${d.steps.map(x => `<li>${x}</li>`).join('')}</ol>
+            </div>
+          </div>
+        </div>
+      </div>`).join('');
+
+        grid.querySelectorAll('.recipe-card').forEach(card => {
+            attachRipple(card);
+            card.addEventListener('click', () => card.classList.toggle('expanded'));
+        });
+    }
+    renderRecipes();
 
     $('#submitEntry').addEventListener('click', async () => {
         const category = inCategory.value;
@@ -628,6 +885,14 @@
         inProduct.value = '';
         $('#inPrice').value = '';
         showToast(`${product} narxi qo'shildi — ${fmt(price)} so'm/${unit}`);
+        burstParticles($('#submitEntry'));
+
+        const updatedTag = board.querySelector(`.tag[data-product="${CSS.escape(product)}"]`);
+        if (updatedTag) {
+            updatedTag.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            updatedTag.classList.add('just-updated');
+            updatedTag.addEventListener('animationend', () => updatedTag.classList.remove('just-updated'), { once: true });
+        }
     });
 
     marketFilter.addEventListener('change', render);
@@ -635,15 +900,220 @@
     searchBox.addEventListener('input', render);
     $('#exportBtn').addEventListener('click', exportCsv);
 
+    // ---------- CSV import ----------
+    $('#importBtn').addEventListener('click', () => $('#importFile').click());
+    $('#importFile').addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        await importCsv(file);
+        e.target.value = '';
+    });
+
+    // ---------- chop etish ----------
+    $('#printBtn').addEventListener('click', () => window.print());
+
+    // ---------- umumiy / shaxsiy taxta ----------
+    const sharedBtn = $('#sharedToggle');
+    sharedBtn.addEventListener('click', async () => {
+        sharedMode = !sharedMode;
+        sharedBtn.classList.toggle('active', sharedMode);
+        sharedBtn.textContent = sharedMode ? "🌐 Umumiy" : "👤 Shaxsiy";
+        if (sharedMode) {
+            showToast("Diqqat: umumiy taxtaga kiritilgan narxlarni BOSHQA foydalanuvchilar ham ko'radi va o'zgartira oladi");
+        } else {
+            showToast("Shaxsiy taxtaga qaytdingiz — endi faqat siz ko'rasiz");
+        }
+        await loadEntries();
+    });
+
+    // ---------- shrift o'lchami ----------
+    let fontScale = 1;
+    function applyFontScale() {
+        document.body.style.zoom = fontScale;
+    }
+    (async () => {
+        try {
+            const res = await window.storage.get('bozor-font-scale', false);
+            if (res && res.value) fontScale = parseFloat(res.value) || 1;
+        } catch (e) { /* birinchi marta ishga tushirilganda kalit topilmaydi */ }
+        applyFontScale();
+    })();
+    $('#fontInc').addEventListener('click', async () => {
+        fontScale = Math.min(1.4, +(fontScale + 0.1).toFixed(2));
+        applyFontScale();
+        try { await window.storage.set('bozor-font-scale', String(fontScale), false); } catch (e) { }
+    });
+    $('#fontDec').addEventListener('click', async () => {
+        fontScale = Math.max(0.85, +(fontScale - 0.1).toFixed(2));
+        applyFontScale();
+        try { await window.storage.set('bozor-font-scale', String(fontScale), false); } catch (e) { }
+    });
+
+    // ---------- ovoz orqali narx kiritish ----------
+    const micBtn = $('#micBtn');
+    const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) {
+        micBtn.style.display = 'none';
+    } else {
+        const recognition = new SpeechRecognitionCtor();
+        recognition.lang = 'ru-RU'; // brauzerlarda o'zbek tili qo'llab-quvvatlanishi cheklangan
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+        let listening = false;
+
+        recognition.addEventListener('result', (e) => {
+            const transcript = e.results[0][0].transcript;
+            const digits = transcript.replace(/[^\d]/g, '');
+            if (digits) {
+                $('#inPrice').value = digits;
+                showToast(`Aniqlangan narx: ${fmt(Number(digits))}`);
+            } else {
+                showToast("Raqam aniqlanmadi, qayta urinib ko'ring");
+            }
+        });
+        recognition.addEventListener('end', () => {
+            listening = false;
+            micBtn.classList.remove('listening');
+        });
+        recognition.addEventListener('error', () => {
+            listening = false;
+            micBtn.classList.remove('listening');
+            showToast("Ovozni aniqlab bo'lmadi");
+        });
+
+        micBtn.addEventListener('click', () => {
+            if (listening) { recognition.stop(); return; }
+            try {
+                recognition.start();
+                listening = true;
+                micBtn.classList.add('listening');
+            } catch (e) { /* allaqachon ishga tushgan bo'lishi mumkin */ }
+        });
+    }
+
+    // ---------- til almashtirish ----------
+    const TRANSLATIONS = {
+        eyebrow: { uz: "Toshkent bozorlari", ru: "Ташкентские базары", en: "Tashkent bazaars" },
+        subtitle: {
+            uz: "Har kungi narxlarni kiriting, bozorlar bo'yicha solishtiring va o'zgarish tendensiyasini kuzating — sabzavot, meva va boshqa mahsulotlar bo'yicha, rasmlari bilan.",
+            ru: "Вводите ежедневные цены, сравнивайте по базарам и следите за динамикой — по овощам, фруктам и другим товарам, с картинками.",
+            en: "Log daily prices, compare across markets, and track trends — for vegetables, fruit, and more, with pictures."
+        },
+        tabAll: { uz: "Barchasi", ru: "Все", en: "All" },
+        tabVeg: { uz: "Sabzavotlar", ru: "Овощи", en: "Vegetables" },
+        tabFruit: { uz: "Mevalar", ru: "Фрукты", en: "Fruit" },
+        tabMeat: { uz: "Go'sht & sut", ru: "Мясо и молоко", en: "Meat & dairy" },
+        tabGrain: { uz: "Don mahsulotlari", ru: "Крупы и злаки", en: "Grains" },
+        tabSpice: { uz: "Ziravor & ko'kat", ru: "Специи и зелень", en: "Spices & herbs" },
+        tabOther: { uz: "Boshqa", ru: "Другое", en: "Other" },
+        searchPh: { uz: "Mahsulot qidirish...", ru: "Поиск товара...", en: "Search products..." },
+        allMarkets: { uz: "Barcha bozorlar", ru: "Все базары", en: "All markets" },
+        sortName: { uz: "Nomi bo'yicha", ru: "По названию", en: "By name" },
+        sortRecent: { uz: "So'nggi qo'shilgan", ru: "Недавно добавленные", en: "Recently added" },
+        sortDesc: { uz: "Narx: qimmatdan", ru: "Цена: сначала дорогие", en: "Price: high to low" },
+        sortAsc: { uz: "Narx: arzondan", ru: "Цена: сначала дешёвые", en: "Price: low to high" },
+        exportBtn: { uz: "⭳ Eksport", ru: "⭳ Экспорт", en: "⭳ Export" },
+        importBtn: { uz: "⭱ Import", ru: "⭱ Импорт", en: "⭱ Import" },
+        printBtn: { uz: "🖨️ Chop etish", ru: "🖨️ Печать", en: "🖨️ Print" },
+        recipesBtn: { uz: "🍲 Taomlar", ru: "🍲 Блюда", en: "🍲 Recipes" },
+        addBtn: { uz: "+ Narx qo'shish", ru: "+ Добавить цену", en: "+ Add price" },
+        recipesTitle: { uz: "An'anaviy o'zbek taomlari", ru: "Традиционные узбекские блюда", en: "Traditional Uzbek dishes" },
+        addTitle: { uz: "Yangi narx kiritish", ru: "Ввод новой цены", en: "Enter a new price" },
+        labelCategory: { uz: "Toifa", ru: "Категория", en: "Category" },
+        labelMarket: { uz: "Bozor", ru: "Базар", en: "Market" },
+        labelProduct: { uz: "Mahsulot", ru: "Товар", en: "Product" },
+        labelPrice: { uz: "Narx (so'm)", ru: "Цена (сум)", en: "Price (so'm)" },
+        labelUnit: { uz: "Birlik", ru: "Единица", en: "Unit" },
+        submitBtn: { uz: "Qo'shish", ru: "Добавить", en: "Add" },
+        formNote: {
+            uz: "Ma'lumotlar faqat sizning hisobingizda saqlanadi va boshqalarga ko'rinmaydi.",
+            ru: "Данные сохраняются только в вашем аккаунте и не видны другим.",
+            en: "Your data is saved only in your account and isn't visible to others."
+        },
+        footerText: { uz: "Narx taxtasi · shaxsiy kuzatuv vositasi", ru: "Доска цен · личный инструмент учёта", en: "Price board · a personal tracking tool" },
+        resetBtn: { uz: "Barcha ma'lumotlarni tozalash", ru: "Очистить все данные", en: "Clear all data" }
+    };
+
+    function applyLanguage(lang) {
+        const t = (key) => (TRANSLATIONS[key] && TRANSLATIONS[key][lang]) || TRANSLATIONS[key].uz;
+        $('.eyebrow').textContent = t('eyebrow');
+        $('.subtitle').textContent = t('subtitle');
+        const tabMap = ['tabAll', 'tabVeg', 'tabFruit', 'tabMeat', 'tabGrain', 'tabSpice', 'tabOther'];
+        document.querySelectorAll('.tab').forEach((tab, i) => {
+            if (tabMap[i]) tab.lastChild.textContent = ' ' + t(tabMap[i]);
+        });
+        searchBox.placeholder = t('searchPh');
+        marketFilter.querySelector('option[value=""]').textContent = t('allMarkets');
+        const sortOpts = sortFilter.querySelectorAll('option');
+        if (sortOpts[0]) sortOpts[0].textContent = t('sortName');
+        if (sortOpts[1]) sortOpts[1].textContent = t('sortRecent');
+        if (sortOpts[2]) sortOpts[2].textContent = t('sortDesc');
+        if (sortOpts[3]) sortOpts[3].textContent = t('sortAsc');
+        $('#exportBtn').textContent = t('exportBtn');
+        $('#importBtn').textContent = t('importBtn');
+        $('#printBtn').textContent = t('printBtn');
+        $('#toggleRecipes').textContent = t('recipesBtn');
+        $('#toggleAdd').textContent = t('addBtn');
+        $('#recipesPanel .panel-title').textContent = t('recipesTitle');
+        $('#addPanel .panel-title').textContent = t('addTitle');
+        const fieldLabels = $('#addPanel').querySelectorAll('.field label');
+        const labelKeys = ['labelCategory', 'labelMarket', 'labelProduct', 'labelPrice', 'labelUnit'];
+        fieldLabels.forEach((el, i) => { if (labelKeys[i]) el.textContent = t(labelKeys[i]); });
+        $('#submitEntry').textContent = t('submitBtn');
+        $('.form-note').textContent = t('formNote');
+        document.querySelector('footer span').textContent = t('footerText');
+        $('#resetBtn').textContent = t('resetBtn');
+    }
+
+    $('#langSelect').addEventListener('change', async (e) => {
+        const lang = e.target.value;
+        applyLanguage(lang);
+        try { await window.storage.set('bozor-lang', lang, false); } catch (err) { }
+    });
+    (async () => {
+        let lang = 'uz';
+        try {
+            const res = await window.storage.get('bozor-lang', false);
+            if (res && res.value) lang = res.value;
+        } catch (e) { /* birinchi marta ishga tushirilganda kalit topilmaydi */ }
+        $('#langSelect').value = lang;
+        if (lang !== 'uz') applyLanguage(lang);
+    })();
+
     $('#resetBtn').addEventListener('click', async () => {
+        if (entries.length === 0) return;
         if (!confirm("Barcha kiritilgan narxlarni o'chirishni tasdiqlaysizmi?")) return;
+        const backup = entries.slice();
         entries = [];
         await saveEntries();
         render();
-        showToast("Barcha ma'lumotlar tozalandi");
+        showToast("Barcha ma'lumotlar tozalandi", "Bekor qilish", async () => {
+            entries = backup;
+            await saveEntries();
+            render();
+            showToast("Tiklandi");
+        });
     });
 
+    const introStart = performance.now();
     loadEntries().then(() => {
         moveIndicator(tabsNav.querySelector('.tab.active'));
+        const elapsed = performance.now() - introStart;
+        const remaining = Math.max(0, 550 - elapsed); // "bozor" bir zumda ochilib qolmasligi uchun eng kam ko'rsatish vaqti
+        setTimeout(() => {
+            const overlay = $('#introOverlay');
+            if (overlay) {
+                overlay.classList.add('hide');
+                overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
+            }
+        }, remaining);
     });
+
+    // ---------- PWA: telefon ekraniga o'rnatish uchun service worker ----------
+    // faqat http(s) orqali ochilganda ishga tushadi — file:// orqali ochilganda brauzer buni qo'llab-quvvatlamaydi
+    if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('sw.js').catch(() => { /* offline qo'llab-quvvatlash ixtiyoriy, xato jim o'tkaziladi */ });
+        });
+    }
 })();
