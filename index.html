@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Bozor Narxlari — narx taxtasi</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link
@@ -67,6 +67,9 @@
                 <button class="font-btn" id="fontInc" title="Shriftni kattalashtirish">A+</button>
                 <button class="theme-toggle" id="themeToggle" title="Tungi rejim"
                     aria-label="Tungi rejimni almashtirish">🌙</button>
+                <button class="install-btn" id="installBtn" title="Telefon ekraniga o'rnatish" hidden>⬇
+                    O'rnatish</button>
+                <span class="sync-badge" id="syncBadge" title="Oflayn holat" hidden></span>
             </div>
             <div class="produce-strip" aria-hidden="true">
                 <div class="produce-strip-track">
@@ -78,10 +81,15 @@
 
         <section class="stats-row" id="statsRow"></section>
         <div id="dishTipWrap"></div>
+        <div id="seasonalWrap"></div>
+        <div id="moversWrap"></div>
 
         <nav class="tabs" id="categoryTabs">
             <button class="tab active" data-cat="">
                 <span class="tab-icon">🧺</span> Barchasi
+            </button>
+            <button class="tab" data-cat="__favorites">
+                <span class="tab-icon">⭐</span> Sevimlilar
             </button>
             <button class="tab" data-cat="sabzavot">
                 <span class="tab-icon">🥕</span> Sabzavotlar
@@ -124,6 +132,12 @@
                 <button class="ghost-btn" id="printBtn" title="Chop etish uchun ko'rinish">🖨️ Chop etish</button>
                 <button class="ghost-btn" id="sharedToggle" title="Umumiy taxtaga o'tish">👤 Shaxsiy</button>
                 <button class="ghost-btn" id="toggleRecipes">🍲 Taomlar</button>
+                <button class="ghost-btn" id="toggleShopping" title="Xarid ro'yxati">📝 Xarid ro'yxati<span
+                        class="count-pill" id="shoppingCount" hidden>0</span></button>
+                <button class="ghost-btn" id="toggleAlerts" title="Narx bo'yicha ogohlantirish">🔔 Ogohlantirish<span
+                        class="count-pill" id="alertsCount" hidden>0</span></button>
+                <button class="ghost-btn" id="toggleIndex" title="Bozorlar narx indeksi">📊 Bozor indeksi</button>
+                <button class="ghost-btn" id="toggleLeaders" title="Faol foydalanuvchilar" hidden>🏅 Reyting</button>
                 <button class="add-btn" id="toggleAdd">+ Narx qo'shish</button>
             </div>
         </div>
@@ -132,6 +146,59 @@
             <div class="panel-inner">
                 <div class="panel-title">An'anaviy o'zbek taomlari</div>
                 <div class="recipe-grid" id="recipeGrid"></div>
+            </div>
+        </div>
+
+        <div class="panel" id="shoppingPanel">
+            <div class="panel-inner">
+                <div class="panel-title">Xarid ro'yxati</div>
+                <div class="shopping-add-row">
+                    <input id="shoppingInput" list="productList" placeholder="Mahsulot qo'shish...">
+                    <button class="submit-btn" id="shoppingAddBtn">Qo'sh</button>
+                </div>
+                <div class="shopping-list" id="shoppingList"></div>
+                <div class="shopping-empty" id="shoppingEmpty" hidden>Ro'yxat bo'sh. Kerakli mahsulotlarni shu yerga
+                    qo'shing.</div>
+                <button class="ghost-btn" id="shoppingClearDone" style="margin-top:10px">Bajarilganlarni
+                    tozalash</button>
+            </div>
+        </div>
+
+        <div class="panel" id="alertsPanel">
+            <div class="panel-inner">
+                <div class="panel-title">Narx bo'yicha ogohlantirish</div>
+                <div class="form-note" style="margin-bottom:12px">Mahsulot narxi belgilagan chegaradan pastga tushsa,
+                    sizga bildirishnoma ko'rsatiladi.</div>
+                <div class="form-grid">
+                    <div class="field">
+                        <label>Mahsulot</label>
+                        <input id="alertProduct" list="productList" placeholder="Masalan: Kartoshka">
+                    </div>
+                    <div class="field">
+                        <label>Chegara narx (so'm)</label>
+                        <input id="alertThreshold" type="number" min="0" step="500" placeholder="4000">
+                    </div>
+                    <button class="submit-btn" id="alertAddBtn">Ogohlantirish qo'shish</button>
+                </div>
+                <div class="alerts-list" id="alertsList"></div>
+            </div>
+        </div>
+
+        <div class="panel" id="indexPanel">
+            <div class="panel-inner">
+                <div class="panel-title">Bozorlar narx indeksi</div>
+                <div class="form-note" style="margin-bottom:12px">Har bir bozorning umumiy narx darajasi, barcha
+                    bozorlar o'rtachasiga nisbatan (100 = o'rtacha).</div>
+                <div class="market-index-list" id="marketIndexList"></div>
+            </div>
+        </div>
+
+        <div class="panel" id="leadersPanel">
+            <div class="panel-inner">
+                <div class="panel-title">Faol foydalanuvchilar reytingi</div>
+                <div class="form-note" style="margin-bottom:12px">Umumiy taxtaga eng ko'p narx qo'shgan
+                    foydalanuvchilar.</div>
+                <div class="leaders-list" id="leadersList"></div>
             </div>
         </div>
 
@@ -183,9 +250,18 @@
                             <option value="bog'">bog'</option>
                         </select>
                     </div>
+                    <div class="field" id="authorField" hidden>
+                        <label>Ismingiz (umumiy taxtada ko'rinadi)</label>
+                        <input id="inAuthor" placeholder="Masalan: Aziz">
+                    </div>
+                    <div class="field">
+                        <label>Eslatma (ixtiyoriy)</label>
+                        <input id="inNote" placeholder="Masalan: sifati yaxshi, yangi hosil">
+                    </div>
                     <button class="submit-btn" id="submitEntry">Qo'shish</button>
                 </div>
-                <div class="form-note">Ma'lumotlar faqat sizning hisobingizda saqlanadi va boshqalarga ko'rinmaydi.
+                <div class="form-note" id="formNoteText">Ma'lumotlar faqat sizning hisobingizda saqlanadi va boshqalarga
+                    ko'rinmaydi.
                 </div>
             </div>
         </div>
@@ -200,10 +276,28 @@
 
     <div class="toast" id="toast"></div>
     <div class="basket-bar" id="basketBar"></div>
+    <div class="chart-modal" id="chartModal">
+        <div class="chart-modal-inner">
+            <button class="chart-close" id="chartClose">✕</button>
+            <div class="chart-modal-head">
+                <span class="chart-modal-icon" id="chartModalIcon"></span>
+                <div>
+                    <div class="chart-modal-title" id="chartModalTitle"></div>
+                    <div class="chart-modal-sub" id="chartModalSub"></div>
+                </div>
+            </div>
+            <div class="chart-modal-body">
+                <svg id="chartModalSvg" viewBox="0 0 700 320" preserveAspectRatio="xMidYMid meet"></svg>
+                <div class="chart-modal-tooltip" id="chartModalTooltip" hidden></div>
+            </div>
+            <div class="chart-modal-legend">
+                <span><i class="dot dot-up"></i> Narx oshgan kun</span>
+                <span><i class="dot dot-down"></i> Narx tushgan kun</span>
+            </div>
+        </div>
+    </div>
 
     <script src="index.js"></script>
-    <script src="index2.js"></script>
-    <script src="manifest.json"></script>
 </body>
 
 </html>

@@ -117,6 +117,7 @@
     let entries = []; // {id, market, product, category, price, unit, ts}
     let activeCategory = '';
     const basket = new Map(); // product -> {price, unit}
+    let favorites = new Set(); // sevimli deb belgilangan mahsulotlar nomlari
 
     const $ = (sel) => document.querySelector(sel);
     const board = $('#board');
@@ -267,8 +268,13 @@
             entries = seedData();
             await saveEntries();
         }
+        if (favoritesLoaded === false) {
+            await loadFavorites();
+            favoritesLoaded = true;
+        }
         render();
     }
+    let favoritesLoaded = false;
 
     async function saveEntries() {
         try {
@@ -277,6 +283,350 @@
         } catch (e) {
             showToast("Saqlashda xatolik yuz berdi");
         }
+    }
+
+    // ---------- sevimlilar (favorites) ----------
+    const FAVORITES_KEY = 'bozor-favorites-v1';
+
+    async function loadFavorites() {
+        try {
+            const res = await window.storage.get(FAVORITES_KEY, false);
+            favorites = new Set(res && res.value ? JSON.parse(res.value) : []);
+        } catch (e) {
+            favorites = new Set();
+        }
+    }
+
+    async function saveFavorites() {
+        try { await window.storage.set(FAVORITES_KEY, JSON.stringify(Array.from(favorites)), false); }
+        catch (e) { /* jim o'tkazamiz */ }
+    }
+
+    async function toggleFavorite(product) {
+        if (favorites.has(product)) favorites.delete(product);
+        else favorites.add(product);
+        await saveFavorites();
+        render();
+    }
+
+    // ---------- xarid ro'yxati (shopping list) ----------
+    const SHOPPING_KEY = 'bozor-shopping-v1';
+    let shoppingList = []; // {id, product, checked}
+
+    async function loadShopping() {
+        try {
+            const res = await window.storage.get(SHOPPING_KEY, false);
+            shoppingList = res && res.value ? JSON.parse(res.value) : [];
+        } catch (e) { shoppingList = []; }
+    }
+    async function saveShopping() {
+        try { await window.storage.set(SHOPPING_KEY, JSON.stringify(shoppingList), false); }
+        catch (e) { showToast("Xarid ro'yxatini saqlashda xatolik"); }
+    }
+    function latestPriceInfo(product) {
+        const matches = entries.filter(e => e.product === product);
+        if (matches.length === 0) return null;
+        const byMarket = {};
+        matches.forEach(e => { if (!byMarket[e.market] || e.ts > byMarket[e.market].ts) byMarket[e.market] = e; });
+        const vals = Object.values(byMarket);
+        const avg = vals.reduce((s, e) => s + e.price, 0) / vals.length;
+        return { avg, unit: vals[vals.length - 1].unit };
+    }
+    function renderShopping() {
+        const list = $('#shoppingList');
+        const empty = $('#shoppingEmpty');
+        const countPill = $('#shoppingCount');
+        const openCount = shoppingList.filter(i => !i.checked).length;
+        if (openCount > 0) { countPill.hidden = false; countPill.textContent = openCount; }
+        else countPill.hidden = true;
+
+        if (shoppingList.length === 0) {
+            list.innerHTML = '';
+            empty.hidden = false;
+            return;
+        }
+        empty.hidden = true;
+        list.innerHTML = shoppingList.map(item => {
+            const info = latestPriceInfo(item.product);
+            const icon = PRODUCT_ICONS[item.product] || DEFAULT_ICON;
+            const priceHint = info ? `<span class="shopping-price-hint">${fmt(info.avg)} so'm/${info.unit}</span>` : '';
+            return `<div class="shopping-row${item.checked ? ' checked' : ''}" data-id="${item.id}">
+          <button class="shopping-check" data-id="${item.id}">${item.checked ? '✓' : ''}</button>
+          <span class="shopping-name">${icon} ${item.product}</span>
+          ${priceHint}
+          <button class="shopping-remove" data-id="${item.id}" title="O'chirish">✕</button>
+        </div>`;
+        }).join('');
+        list.querySelectorAll('.shopping-check').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const it = shoppingList.find(i => String(i.id) === btn.dataset.id);
+                if (it) { it.checked = !it.checked; await saveShopping(); renderShopping(); }
+            });
+        });
+        list.querySelectorAll('.shopping-remove').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                shoppingList = shoppingList.filter(i => String(i.id) !== btn.dataset.id);
+                await saveShopping(); renderShopping();
+            });
+        });
+    }
+    $('#shoppingAddBtn').addEventListener('click', async () => {
+        const input = $('#shoppingInput');
+        const val = input.value.trim();
+        if (!val) return;
+        const nextId = shoppingList.length ? Math.max(...shoppingList.map(i => i.id)) + 1 : 1;
+        shoppingList.push({ id: nextId, product: val, checked: false });
+        await saveShopping();
+        renderShopping();
+        input.value = '';
+        showToast(`"${val}" xarid ro'yxatiga qo'shildi`);
+    });
+    $('#shoppingInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#shoppingAddBtn').click(); });
+    $('#shoppingClearDone').addEventListener('click', async () => {
+        const before = shoppingList.length;
+        shoppingList = shoppingList.filter(i => !i.checked);
+        if (shoppingList.length === before) { showToast("Bajarilgan band yo'q"); return; }
+        await saveShopping();
+        renderShopping();
+        showToast("Bajarilgan bandlar tozalandi");
+    });
+    $('#toggleShopping').addEventListener('click', () => {
+        $('#shoppingPanel').classList.toggle('open');
+        if ($('#shoppingPanel').classList.contains('open')) renderShopping();
+    });
+
+    // ---------- narx bo'yicha ogohlantirish (price alerts) ----------
+    const ALERTS_KEY = 'bozor-alerts-v1';
+    let alerts = []; // {id, product, threshold, notifiedAt}
+
+    async function loadAlerts() {
+        try {
+            const res = await window.storage.get(ALERTS_KEY, false);
+            alerts = res && res.value ? JSON.parse(res.value) : [];
+        } catch (e) { alerts = []; }
+    }
+    async function saveAlerts() {
+        try { await window.storage.set(ALERTS_KEY, JSON.stringify(alerts), false); }
+        catch (e) { showToast("Ogohlantirishni saqlashda xatolik"); }
+    }
+    function renderAlerts() {
+        const list = $('#alertsList');
+        const countPill = $('#alertsCount');
+        const hitCount = alerts.filter(a => a.notifiedAt).length;
+        if (hitCount > 0) { countPill.hidden = false; countPill.textContent = hitCount; }
+        else countPill.hidden = true;
+
+        if (alerts.length === 0) {
+            list.innerHTML = '<div class="shopping-empty">Hali ogohlantirish qo\'shilmagan.</div>';
+            return;
+        }
+        list.innerHTML = alerts.map(a => {
+            const info = latestPriceInfo(a.product);
+            const isHit = !!a.notifiedAt;
+            const curText = info ? `hozirgi narx: <b>${fmt(info.avg)}</b> so'm` : "hozircha narx yo'q";
+            return `<div class="alert-row${isHit ? ' triggered' : ''}">
+          <span class="alert-info">🔔 <b>${a.product}</b> narxi <b>${fmt(a.threshold)}</b> so'mdan pastga tushsa — ${curText}</span>
+          <span class="alert-status${isHit ? ' hit' : ''}">${isHit ? 'Ishga tushdi' : 'Kuzatilmoqda'}</span>
+          <button class="alert-remove" data-id="${a.id}" title="O'chirish">✕</button>
+        </div>`;
+        }).join('');
+        list.querySelectorAll('.alert-remove').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                alerts = alerts.filter(a => String(a.id) !== btn.dataset.id);
+                await saveAlerts(); renderAlerts();
+            });
+        });
+    }
+    // narxlar yangilanganda barcha ogohlantirishlarni tekshiradi va chegaradan pastga tushganlarini bildiradi
+    function checkAlerts() {
+        let anyNew = false;
+        alerts.forEach(a => {
+            const info = latestPriceInfo(a.product);
+            if (info && info.avg < a.threshold) {
+                if (!a.notifiedAt) {
+                    a.notifiedAt = Date.now();
+                    anyNew = true;
+                    showToast(`🔔 ${a.product} narxi ${fmt(a.threshold)} so'mdan pastga tushdi! Hozir: ${fmt(info.avg)} so'm`);
+                    if (window.Notification && Notification.permission === 'granted') {
+                        try { new Notification('Bozor narxlari', { body: `${a.product} narxi ${fmt(info.avg)} so'm bo'ldi` }); } catch (e) { }
+                    }
+                }
+            } else {
+                a.notifiedAt = null;
+            }
+        });
+        if (anyNew) saveAlerts();
+    }
+    $('#alertAddBtn').addEventListener('click', async () => {
+        const product = $('#alertProduct').value.trim();
+        const threshold = parseFloat($('#alertThreshold').value);
+        if (!product) { showToast("Mahsulot nomini kiriting"); return; }
+        if (!threshold || threshold <= 0) { showToast("To'g'ri chegara narx kiriting"); return; }
+        const nextId = alerts.length ? Math.max(...alerts.map(a => a.id)) + 1 : 1;
+        alerts.push({ id: nextId, product, threshold, notifiedAt: null });
+        await saveAlerts();
+        renderAlerts();
+        checkAlerts();
+        $('#alertProduct').value = ''; $('#alertThreshold').value = '';
+        showToast("Ogohlantirish qo'shildi");
+        if (window.Notification && Notification.permission === 'default') {
+            try { Notification.requestPermission(); } catch (e) { }
+        }
+    });
+    $('#toggleAlerts').addEventListener('click', () => {
+        $('#alertsPanel').classList.toggle('open');
+        if ($('#alertsPanel').classList.contains('open')) renderAlerts();
+    });
+
+    // ---------- mahsulot eslatmalari (notes) ----------
+    const NOTES_KEY = 'bozor-notes-v1';
+    let productNotes = {}; // product -> note text
+
+    async function loadNotes() {
+        try {
+            const res = await window.storage.get(NOTES_KEY, false);
+            productNotes = res && res.value ? JSON.parse(res.value) : {};
+        } catch (e) { productNotes = {}; }
+    }
+    async function saveNotes() {
+        try { await window.storage.set(NOTES_KEY, JSON.stringify(productNotes), false); }
+        catch (e) { /* jim o'tkazamiz */ }
+    }
+
+    // ---------- umumiy taxta uchun foydalanuvchi ismi va reyting ----------
+    const AUTHOR_KEY = 'bozor-author-v1';
+    let authorName = '';
+    async function loadAuthor() {
+        try {
+            const res = await window.storage.get(AUTHOR_KEY, false);
+            authorName = res && res.value ? res.value : '';
+        } catch (e) { authorName = ''; }
+        $('#inAuthor').value = authorName;
+    }
+    $('#inAuthor').addEventListener('change', async () => {
+        authorName = $('#inAuthor').value.trim();
+        try { await window.storage.set(AUTHOR_KEY, authorName, false); } catch (e) { }
+    });
+    function renderLeaders() {
+        if (!sharedMode) return;
+        const counts = {};
+        entries.forEach(e => {
+            const name = e.author && e.author.trim() ? e.author.trim() : "Noma'lum";
+            counts[name] = (counts[name] || 0) + 1;
+        });
+        const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 15);
+        const list = $('#leadersList');
+        if (ranked.length === 0) {
+            list.innerHTML = '<div class="shopping-empty">Umumiy taxtada hali yozuv yo\'q.</div>';
+            return;
+        }
+        const medals = ['🥇', '🥈', '🥉'];
+        list.innerHTML = ranked.map(([name, count], i) => `
+      <div class="leader-row">
+        <span class="leader-rank">${medals[i] || (i + 1)}</span>
+        <span class="leader-name">${name}</span>
+        <span class="leader-count">${count} ta narx</span>
+      </div>`).join('');
+    }
+    $('#toggleLeaders').addEventListener('click', () => {
+        $('#leadersPanel').classList.toggle('open');
+        if ($('#leadersPanel').classList.contains('open')) renderLeaders();
+    });
+
+    // ---------- bozorlar narx indeksi ----------
+    function renderMarketIndex() {
+        const list = $('#marketIndexList');
+        if (entries.length === 0) { list.innerHTML = '<div class="shopping-empty">Hozircha ma\'lumot yo\'q.</div>'; return; }
+        // har bir bozor uchun, har bir mahsulotning o'sha bozordagi eng so'nggi narxini
+        // shu mahsulotning barcha bozorlardagi o'rtacha narxiga nisbatan solishtiramiz
+        const grouped = groupByProduct(entries);
+        const ratiosByMarket = {};
+        MARKETS.forEach(m => ratiosByMarket[m] = []);
+        Object.values(grouped).forEach(list2 => {
+            const byMarket = {};
+            list2.slice().sort((a, b) => a.ts - b.ts).forEach(e => { byMarket[e.market] = e; });
+            const vals = Object.values(byMarket);
+            if (vals.length < 2) return;
+            const avg = vals.reduce((s, e) => s + e.price, 0) / vals.length;
+            if (!avg) return;
+            vals.forEach(e => { if (ratiosByMarket[e.market]) ratiosByMarket[e.market].push(e.price / avg); });
+        });
+        const indexData = MARKETS.map(m => {
+            const ratios = ratiosByMarket[m];
+            const idx = ratios.length ? (ratios.reduce((a, b) => a + b, 0) / ratios.length) * 100 : null;
+            return { market: m, idx };
+        }).filter(d => d.idx !== null).sort((a, b) => a.idx - b.idx);
+
+        if (indexData.length === 0) { list.innerHTML = '<div class="shopping-empty">Solishtirish uchun yetarli ma\'lumot yo\'q (kamida 2 bozorda bir xil mahsulot kerak).</div>'; return; }
+        const maxDev = Math.max(...indexData.map(d => Math.abs(d.idx - 100)), 10);
+        list.innerHTML = indexData.map(d => {
+            const dev = d.idx - 100;
+            const widthPct = Math.min(100, 50 + (dev / maxDev) * 50);
+            return `<div class="index-row">
+          <span class="index-market-name">${d.market}</span>
+          <div class="index-bar-track"><div class="index-bar-fill ${dev >= 0 ? 'above' : 'below'}" style="width:${widthPct.toFixed(1)}%"></div></div>
+          <span class="index-value">${d.idx.toFixed(0)}</span>
+        </div>`;
+        }).join('');
+    }
+    $('#toggleIndex').addEventListener('click', () => {
+        $('#indexPanel').classList.toggle('open');
+        if ($('#indexPanel').classList.contains('open')) renderMarketIndex();
+    });
+
+    // ---------- mavsumiy mahsulotlar taqvimi ----------
+    const SEASONAL_CALENDAR = {
+        0: ["Anor", "Xurmo", "Non", "Guruch"], 1: ["Non", "Guruch", "Un"],
+        2: ["Ismaloq", "Ukrop", "Rediska"], 3: ["Rediska", "Ukrop", "Salat bargi"],
+        4: ["Qulupnay", "Gilos", "O'rik"], 5: ["Gilos", "O'rik", "Shaftoli", "Pomidor"],
+        6: ["Tarvuz", "Qovun", "Shaftoli", "Bodring", "Pomidor"], 7: ["Tarvuz", "Qovun", "Uzum", "Baqlajon"],
+        8: ["Uzum", "Anor", "Olma", "Behi"], 9: ["Olma", "Behi", "Qovoq", "Anor"],
+        10: ["Qovoq", "Lavlagi", "Karam"], 11: ["Lavlagi", "Karam", "Anor"]
+    };
+    function renderSeasonalBanner() {
+        const wrap = $('#seasonalWrap');
+        const month = new Date().getMonth();
+        const items = SEASONAL_CALENDAR[month] || [];
+        const present = items.filter(p => PRODUCTS_BY_CATEGORY.sabzavot.includes(p) || PRODUCTS_BY_CATEGORY.meva.includes(p) || PRODUCTS_BY_CATEGORY.don.includes(p) || PRODUCTS_BY_CATEGORY.ziravor.includes(p));
+        if (present.length === 0) { wrap.innerHTML = ''; return; }
+        const monthNames = ["yanvar", "fevral", "mart", "aprel", "may", "iyun", "iyul", "avgust", "sentabr", "oktabr", "noyabr", "dekabr"];
+        wrap.innerHTML = `<div class="seasonal-banner">
+        <span class="season-icon">📅</span>
+        <span class="season-text">Hozir <b>${monthNames[month]}</b> — bu mahsulotlar mavsumida, odatda arzonroq bo'ladi:</span>
+        <span class="season-items">${present.map(p => `<span class="season-chip">${PRODUCT_ICONS[p] || DEFAULT_ICON} ${p}</span>`).join('')}</span>
+      </div>`;
+    }
+
+    // ---------- "eng ko'p o'zgargan narxlar" ----------
+    function renderMovers(list) {
+        const wrap = $('#moversWrap');
+        if (!list || list.length === 0) { wrap.innerHTML = ''; return; }
+        const grouped = groupByProduct(list);
+        const changes = [];
+        Object.entries(grouped).forEach(([p, arr]) => {
+            const sorted = arr.slice().sort((a, b) => a.ts - b.ts);
+            if (sorted.length < 2) return;
+            const first = sorted[0].price, last = sorted[sorted.length - 1].price;
+            if (!first) return;
+            const pct = ((last - first) / first) * 100;
+            if (Math.abs(pct) < 0.5) return;
+            changes.push({ product: p, pct, last });
+        });
+        changes.sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct));
+        const top = changes.slice(0, 5);
+        if (top.length === 0) { wrap.innerHTML = ''; return; }
+        wrap.innerHTML = `<div class="movers-section">
+        <div class="movers-title">📈 Eng ko'p o'zgargan narxlar</div>
+        <div class="movers-grid">
+          ${top.map(c => `<div class="mover-card">
+              <span class="mover-icon">${PRODUCT_ICONS[c.product] || DEFAULT_ICON}</span>
+              <div>
+                <div class="mover-name">${c.product}</div>
+                <div class="mover-change ${c.pct >= 0 ? 'up' : 'down'}">${c.pct >= 0 ? '▲' : '▼'} ${Math.abs(c.pct).toFixed(1)}%</div>
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>`;
     }
 
     function seedData() {
@@ -528,15 +878,25 @@
 
         let list = entries.slice();
         if (filterMarket) list = list.filter(e => e.market === filterMarket);
-        if (activeCategory) list = list.filter(e => e.category === activeCategory);
+        if (activeCategory === '__favorites') list = list.filter(e => favorites.has(e.product));
+        else if (activeCategory) list = list.filter(e => e.category === activeCategory);
         if (query) list = list.filter(e => e.product.toLowerCase().includes(query));
 
         renderStats(list);
+        renderMovers(list);
+        renderSeasonalBanner();
+        checkAlerts();
+        if ($('#shoppingPanel').classList.contains('open')) renderShopping();
+        if ($('#alertsPanel').classList.contains('open')) renderAlerts();
+        if ($('#indexPanel').classList.contains('open')) renderMarketIndex();
+        if ($('#leadersPanel').classList.contains('open')) renderLeaders();
+        if ($('#recipesPanel').classList.contains('open')) renderRecipes();
 
         if (list.length === 0) {
+            const isFavView = activeCategory === '__favorites';
             board.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
-        <div class="glyph">🍉</div>
-        <div><b>Hozircha narx yo'q.</b><br>Yuqoridagi "Narx qo'shish" tugmasi orqali birinchi narxni kiriting.</div>
+        <div class="glyph">${isFavView ? '⭐' : '🍉'}</div>
+        <div><b>${isFavView ? "Hali sevimli mahsulot yo'q." : "Hozircha narx yo'q."}</b><br>${isFavView ? "Har bir mahsulot kartasidagi ⭐ belgisini bosib, uni sevimlilarga qo'shing." : 'Yuqoridagi "Narx qo\'shish" tugmasi orqali birinchi narxni kiriting.'}</div>
       </div>`;
             return;
         }
@@ -588,17 +948,21 @@
                 .map(([m, e]) => `<div class="market-row"><span class="m-name">${m}</span><span class="m-price">${fmt(e.price)}</span></div>`)
                 .join('');
 
-            const sparkSvg = pts ? `<svg class="spark" width="100%" height="44" viewBox="0 0 220 44" preserveAspectRatio="none">
+            const sparkSvg = pts ? `<div class="spark-wrap" data-product="${p}" title="To'liq grafikni ko'rish"><svg class="spark" width="100%" height="44" viewBox="0 0 220 44" preserveAspectRatio="none">
           <polyline points="${pts}" fill="none" stroke="${d.trend === 'up' ? 'var(--down)' : d.trend === 'down' ? 'var(--up)' : 'var(--teal-light)'}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>` : '';
+        </svg></div>` : '';
 
             const productIcon = PRODUCT_ICONS[p] || DEFAULT_ICON;
             const softColor = hexToRgba(meta.color, 0.16);
             const inBasket = basket.has(p);
             const isFresh = (Date.now() - d.latestTs) < 2 * 60 * 1000;
+            const isFav = favorites.has(p);
+            const note = productNotes[p];
+            const noteHtml = note ? `<div class="tag-note">📝 ${note}</div>` : '';
 
             return `<div class="tag" data-product="${p}" style="--cat-color:${meta.color}; --cat-color-soft:${softColor}; animation-delay:${Math.min(idx * 0.05, 0.5)}s">
         ${isFresh ? '<span class="fresh-badge">✦ Yangi</span>' : ''}
+        <button class="fav-btn${isFav ? ' is-fav' : ''}" data-product="${p}" title="Sevimlilarga qo'shish/olib tashlash" aria-label="Sevimli">${isFav ? '★' : '☆'}</button>
         <span class="tag-cat-icon" title="${meta.label}">${meta.icon}</span>
         <div class="tag-header">
           <div class="tag-image">${productIcon}</div>
@@ -612,6 +976,7 @@
           <span class="tag-trend ${trendClass}">${trendArrow} ${trendText}</span>
         </div>
         <div class="tag-range">Diapazon: <b>${fmt(d.min)}</b> — <b>${fmt(d.max)}</b></div>
+        ${noteHtml}
         ${sparkSvg}
         <div class="tag-markets">${marketsHtml}</div>
         <button class="basket-btn${inBasket ? ' in-basket' : ''}" data-product="${p}" data-price="${d.avg}" data-unit="${d.unit}">
@@ -623,12 +988,105 @@
         board.querySelectorAll('.basket-btn').forEach(btn => {
             btn.addEventListener('click', () => toggleBasket(btn.dataset.product, Number(btn.dataset.price), btn.dataset.unit));
         });
+        board.querySelectorAll('.fav-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => { e.stopPropagation(); toggleFavorite(btn.dataset.product); });
+        });
+        board.querySelectorAll('.spark-wrap').forEach(el => {
+            el.addEventListener('click', (e) => { e.stopPropagation(); openChartModal(el.dataset.product); });
+        });
 
         board.querySelectorAll('.tag').forEach(attachTilt);
     }
 
+    // ---------- to'liq ekranli narx grafigi (fullscreen chart modal) ----------
+    const chartModal = $('#chartModal');
+    function formatDateShort(ts) {
+        const d = new Date(ts);
+        const months = ["yan", "fev", "mar", "apr", "may", "iyun", "iyul", "avg", "sen", "okt", "noy", "dek"];
+        return `${d.getDate()}-${months[d.getMonth()]}`;
+    }
+    function openChartModal(product) {
+        const list = entries.filter(e => e.product === product).slice().sort((a, b) => a.ts - b.ts);
+        if (list.length === 0) return;
+        $('#chartModalIcon').textContent = PRODUCT_ICONS[product] || DEFAULT_ICON;
+        $('#chartModalTitle').textContent = product;
+        $('#chartModalSub').textContent = `${list.length} ta yozuv · so'm / ${list[list.length - 1].unit}`;
+
+        const w = 700, h = 320, padL = 55, padR = 20, padT = 20, padB = 40;
+        const prices = list.map(e => e.price);
+        const min = Math.min(...prices), max = Math.max(...prices);
+        const range = (max - min) || 1;
+        const innerW = w - padL - padR, innerH = h - padT - padB;
+
+        const points = list.map((e, i) => {
+            const x = padL + (list.length === 1 ? innerW / 2 : (i / (list.length - 1)) * innerW);
+            const y = padT + innerH - ((e.price - min) / range) * innerH;
+            return { x, y, e };
+        });
+
+        const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+        const areaPath = `${linePath} L${points[points.length - 1].x.toFixed(1)},${padT + innerH} L${points[0].x.toFixed(1)},${padT + innerH} Z`;
+
+        // Y o'qi belgilari
+        const ySteps = 4;
+        let axisSvg = '';
+        for (let i = 0; i <= ySteps; i++) {
+            const val = min + (range * i / ySteps);
+            const y = padT + innerH - (innerH * i / ySteps);
+            axisSvg += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${w - padR}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-width="1"/>
+        <text x="${padL - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="var(--ink)" opacity="0.65" font-family="JetBrains Mono, monospace">${fmt(val)}</text>`;
+        }
+        // X o'qi sana belgilari (juda ko'p bo'lsa siyraklashtiramiz)
+        const labelEvery = Math.max(1, Math.ceil(points.length / 7));
+        let xLabels = '';
+        points.forEach((p, i) => {
+            if (i % labelEvery === 0 || i === points.length - 1) {
+                xLabels += `<text x="${p.x.toFixed(1)}" y="${h - padB + 18}" text-anchor="middle" font-size="10.5" fill="var(--ink)" opacity="0.65" font-family="JetBrains Mono, monospace">${formatDateShort(p.e.ts)}</text>`;
+            }
+        });
+
+        let dotsSvg = '';
+        points.forEach((p, i) => {
+            const prev = points[i - 1];
+            const up = prev ? p.e.price > prev.e.price : false;
+            const down = prev ? p.e.price < prev.e.price : false;
+            const color = up ? 'var(--down)' : down ? 'var(--up)' : 'var(--teal-light)';
+            dotsSvg += `<circle class="chart-pt" data-idx="${i}" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="5" fill="${color}" stroke="var(--card-bg)" stroke-width="2" style="cursor:pointer"/>`;
+        });
+
+        const svgEl = $('#chartModalSvg');
+        svgEl.innerHTML = `
+      ${axisSvg}
+      <path d="${areaPath}" fill="var(--teal)" opacity="0.08"/>
+      <path d="${linePath}" fill="none" stroke="var(--teal)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      ${xLabels}
+      ${dotsSvg}
+    `;
+
+        const tooltip = $('#chartModalTooltip');
+        svgEl.querySelectorAll('.chart-pt').forEach(dot => {
+            dot.addEventListener('mouseenter', () => {
+                const idx = Number(dot.dataset.idx);
+                const p = points[idx];
+                tooltip.hidden = false;
+                tooltip.innerHTML = `<b>${fmt(p.e.price)}</b> so'm · ${p.e.market}<br>${new Date(p.e.ts).toLocaleDateString('uz-UZ')}`;
+                const rect = svgEl.getBoundingClientRect();
+                const scaleX = rect.width / w;
+                tooltip.style.left = (p.x * scaleX) + 'px';
+                tooltip.style.top = (p.y * (rect.height / h)) + 'px';
+            });
+            dot.addEventListener('mouseleave', () => { tooltip.hidden = true; });
+        });
+
+        chartModal.classList.add('show');
+    }
+    $('#chartClose').addEventListener('click', () => chartModal.classList.remove('show'));
+    chartModal.addEventListener('click', (e) => { if (e.target === chartModal) chartModal.classList.remove('show'); });
+
     // sichqoncha harakatiga qarab yengil 3D moyillik (tilt) effekti
+    const supportsHover = window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches;
     function attachTilt(card) {
+        if (!supportsHover) return; // teginish ekranlarida bu effekt kerak emas va "yopishib qolishi" mumkin
         card.addEventListener('mousemove', (e) => {
             const rect = card.getBoundingClientRect();
             const px = (e.clientX - rect.left) / rect.width - 0.5;
@@ -840,13 +1298,72 @@
         $('#recipesPanel').classList.toggle('open');
     });
 
+    // ---------- taomlar narx kalkulyatori ----------
+    // taom retseptlaridagi mahsulot nomlarini bozor mahsulotlariga bog'lash uchun qo'lda tuzilgan mos kelish jadvali
+    const INGREDIENT_ALIASES = {
+        "mol yoki qo'y go'shti": "Go'sht (mol)", "qo'y yoki mol go'shti": "Go'sht (qo'y)",
+        "mol go'shti (qiyma)": "Qiyma", "mol yoki qo'y go'shti (qiyma)": "Qiyma",
+        "mol go'shti": "Go'sht (mol)", "qo'y go'shti": "Go'sht (qo'y)",
+        "bulg'or qalampiri": "Qalampir", "bug'doy (maydalangan)": "Bug'doy",
+        "tuxum": "Tuxum (10 dona)", "tuxum oqi": "Tuxum (10 dona)",
+        "dumba yog'i (ixtiyoriy)": "Dumba yog'i", "guruch yoki jigar": "Guruch"
+    };
+    function findProductForIngredient(namePart) {
+        const key = namePart.trim().toLowerCase();
+        if (INGREDIENT_ALIASES[key]) return INGREDIENT_ALIASES[key];
+        const products = Object.keys(PRODUCT_ICONS).sort((a, b) => b.length - a.length);
+        for (const p of products) {
+            if (key.includes(p.toLowerCase())) return p;
+        }
+        for (const p of products) {
+            if (p.toLowerCase().includes(key)) return p;
+        }
+        return null;
+    }
+    function parseIngredientQty(qtyPart) {
+        const m = qtyPart.match(/(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l|litr|dona|bosh)/i);
+        if (!m) return null;
+        return { amount: parseFloat(m[1].replace(',', '.')), unit: m[2].toLowerCase() };
+    }
+    function estimateDishCost(dish) {
+        let total = 0, matched = 0, totalItems = 0;
+        dish.ingredients.forEach(ing => {
+            const parts = ing.split(' — ');
+            if (parts.length < 2) return;
+            totalItems++;
+            const product = findProductForIngredient(parts[0]);
+            const qty = parseIngredientQty(parts[1]);
+            if (!product || !qty) return;
+            const info = latestPriceInfo(product);
+            if (!info) return;
+            let amountInProductUnit = null;
+            const pu = (info.unit || 'kg').toLowerCase();
+            if (qty.unit === 'g' && pu === 'kg') amountInProductUnit = qty.amount / 1000;
+            else if (qty.unit === 'kg' && pu === 'kg') amountInProductUnit = qty.amount;
+            else if (qty.unit === 'ml' && (pu === 'litr' || pu === 'l')) amountInProductUnit = qty.amount / 1000;
+            else if ((qty.unit === 'l' || qty.unit === 'litr') && (pu === 'litr' || pu === 'l')) amountInProductUnit = qty.amount;
+            else if (qty.unit === 'dona' && pu === 'dona') amountInProductUnit = qty.amount;
+            if (amountInProductUnit === null) return;
+            total += info.avg * amountInProductUnit;
+            matched++;
+        });
+        if (matched === 0) return null;
+        return { total, matched, totalItems };
+    }
+
     function renderRecipes() {
         const grid = $('#recipeGrid');
-        grid.innerHTML = DISHES.map((d, i) => `
+        grid.innerHTML = DISHES.map((d, i) => {
+            const cost = estimateDishCost(d);
+            const costHtml = cost
+                ? `<span class="recipe-cost">💰 ~${fmt(cost.total)} so'm${cost.matched < cost.totalItems ? ' (qisman)' : ''}</span>`
+                : '';
+            return `
       <div class="recipe-card" style="animation-delay:${Math.min(i * 0.04, 0.4)}s">
         <div class="recipe-card-head">
           <span class="recipe-icon">${d.icon}</span>
           <span class="recipe-name">${d.name}</span>
+          ${costHtml}
           <span class="recipe-chevron">▼</span>
         </div>
         <div class="recipe-body">
@@ -859,7 +1376,8 @@
             </div>
           </div>
         </div>
-      </div>`).join('');
+      </div>`;
+        }).join('');
 
         grid.querySelectorAll('.recipe-card').forEach(card => {
             attachRipple(card);
@@ -874,17 +1392,25 @@
         const product = inProduct.value.trim();
         const price = parseFloat($('#inPrice').value);
         const unit = $('#inUnit').value;
+        const note = $('#inNote').value.trim();
 
         if (!product) { showToast("Mahsulot nomini kiriting"); return; }
         if (!price || price <= 0) { showToast("To'g'ri narx kiriting"); return; }
 
         const newId = entries.length ? Math.max(...entries.map(e => e.id)) + 1 : 1;
-        entries.push({ id: newId, market, product, category, price, unit, ts: Date.now() });
+        const wasOffline = !navigator.onLine;
+        const newEntry = { id: newId, market, product, category, price, unit, ts: Date.now() };
+        if (sharedMode && authorName) newEntry.author = authorName;
+        if (wasOffline) newEntry.pending = true;
+        entries.push(newEntry);
         await saveEntries();
+        if (note) { productNotes[product] = note; await saveNotes(); }
+        if (wasOffline) { pendingCount++; updateSyncBadge(); }
         render();
         inProduct.value = '';
         $('#inPrice').value = '';
-        showToast(`${product} narxi qo'shildi — ${fmt(price)} so'm/${unit}`);
+        $('#inNote').value = '';
+        showToast(`${product} narxi qo'shildi — ${fmt(price)} so'm/${unit}${wasOffline ? ' (oflayn — keyin sinxronlanadi)' : ''}`);
         burstParticles($('#submitEntry'));
 
         const updatedTag = board.querySelector(`.tag[data-product="${CSS.escape(product)}"]`);
@@ -914,10 +1440,18 @@
 
     // ---------- umumiy / shaxsiy taxta ----------
     const sharedBtn = $('#sharedToggle');
+    function applySharedModeUi() {
+        $('#authorField').hidden = !sharedMode;
+        $('#toggleLeaders').hidden = !sharedMode;
+        $('#formNoteText').textContent = sharedMode
+            ? "Diqqat: umumiy taxtaga kiritilgan narxlar boshqa foydalanuvchilarga ham ko'rinadi va o'zgartirilishi mumkin."
+            : "Ma'lumotlar faqat sizning hisobingizda saqlanadi va boshqalarga ko'rinmaydi.";
+    }
     sharedBtn.addEventListener('click', async () => {
         sharedMode = !sharedMode;
         sharedBtn.classList.toggle('active', sharedMode);
         sharedBtn.textContent = sharedMode ? "🌐 Umumiy" : "👤 Shaxsiy";
+        applySharedModeUi();
         if (sharedMode) {
             showToast("Diqqat: umumiy taxtaga kiritilgan narxlarni BOSHQA foydalanuvchilar ham ko'radi va o'zgartira oladi");
         } else {
@@ -925,11 +1459,22 @@
         }
         await loadEntries();
     });
+    applySharedModeUi();
 
     // ---------- shrift o'lchami ----------
     let fontScale = 1;
+    const supportsCssZoom = (() => {
+        try { return CSS.supports('zoom', '1'); } catch (e) { return false; }
+    })();
     function applyFontScale() {
-        document.body.style.zoom = fontScale;
+        if (supportsCssZoom) {
+            document.body.style.zoom = fontScale;
+        } else {
+            // zoom qo'llab-quvvatlanmasa (masalan ba'zi Firefox versiyalari), transform bilan orqaga qaytish
+            document.body.style.transformOrigin = 'top left';
+            document.body.style.transform = fontScale === 1 ? '' : `scale(${fontScale})`;
+            document.body.style.width = fontScale === 1 ? '' : `${100 / fontScale}%`;
+        }
     }
     (async () => {
         try {
@@ -1000,6 +1545,7 @@
             en: "Log daily prices, compare across markets, and track trends — for vegetables, fruit, and more, with pictures."
         },
         tabAll: { uz: "Barchasi", ru: "Все", en: "All" },
+        tabFav: { uz: "Sevimlilar", ru: "Избранное", en: "Favorites" },
         tabVeg: { uz: "Sabzavotlar", ru: "Овощи", en: "Vegetables" },
         tabFruit: { uz: "Mevalar", ru: "Фрукты", en: "Fruit" },
         tabMeat: { uz: "Go'sht & sut", ru: "Мясо и молоко", en: "Meat & dairy" },
@@ -1038,7 +1584,7 @@
         const t = (key) => (TRANSLATIONS[key] && TRANSLATIONS[key][lang]) || TRANSLATIONS[key].uz;
         $('.eyebrow').textContent = t('eyebrow');
         $('.subtitle').textContent = t('subtitle');
-        const tabMap = ['tabAll', 'tabVeg', 'tabFruit', 'tabMeat', 'tabGrain', 'tabSpice', 'tabOther'];
+        const tabMap = ['tabAll', 'tabFav', 'tabVeg', 'tabFruit', 'tabMeat', 'tabGrain', 'tabSpice', 'tabOther'];
         document.querySelectorAll('.tab').forEach((tab, i) => {
             if (tabMap[i]) tab.lastChild.textContent = ' ' + t(tabMap[i]);
         });
@@ -1095,8 +1641,40 @@
         });
     });
 
+    // ---------- oflayn holat va sinxronlash ko'rsatkichi ----------
+    let pendingCount = 0;
+    const syncBadge = $('#syncBadge');
+    function updateSyncBadge() {
+        if (!navigator.onLine) {
+            syncBadge.hidden = false;
+            syncBadge.className = 'sync-badge offline';
+            syncBadge.textContent = pendingCount > 0 ? `Oflayn · ${pendingCount} ta kutmoqda` : 'Oflayn rejim';
+        } else if (pendingCount > 0) {
+            syncBadge.hidden = false;
+            syncBadge.className = 'sync-badge pending';
+            syncBadge.textContent = `Sinxronlanmoqda... ${pendingCount} ta`;
+        } else {
+            syncBadge.hidden = true;
+        }
+    }
+    async function syncPendingEntries() {
+        const stillPending = entries.filter(e => e.pending);
+        if (stillPending.length === 0) { pendingCount = 0; updateSyncBadge(); return; }
+        stillPending.forEach(e => { delete e.pending; });
+        pendingCount = 0;
+        await saveEntries();
+        updateSyncBadge();
+        showToast(`${stillPending.length} ta oflayn narx muvaffaqiyatli sinxronlandi ✓`);
+        render();
+    }
+    window.addEventListener('offline', updateSyncBadge);
+    window.addEventListener('online', () => { syncPendingEntries(); });
+
     const introStart = performance.now();
-    loadEntries().then(() => {
+    Promise.all([loadShopping(), loadAlerts(), loadNotes(), loadAuthor()]).then(() => loadEntries()).then(() => {
+        pendingCount = entries.filter(e => e.pending).length;
+        updateSyncBadge();
+        if (navigator.onLine && pendingCount > 0) syncPendingEntries();
         moveIndicator(tabsNav.querySelector('.tab.active'));
         const elapsed = performance.now() - introStart;
         const remaining = Math.max(0, 550 - elapsed); // "bozor" bir zumda ochilib qolmasligi uchun eng kam ko'rsatish vaqti
@@ -1116,4 +1694,27 @@
             navigator.serviceWorker.register('sw.js').catch(() => { /* offline qo'llab-quvvatlash ixtiyoriy, xato jim o'tkaziladi */ });
         });
     }
+
+    // ---------- PWA: ilova sifatida o'rnatish tugmasi ----------
+    const installBtn = $('#installBtn');
+    let deferredInstallPrompt = null;
+    window.addEventListener('beforeinstallprompt', (e) => {
+        e.preventDefault();
+        deferredInstallPrompt = e;
+        installBtn.hidden = false;
+    });
+    installBtn.addEventListener('click', async () => {
+        if (!deferredInstallPrompt) return;
+        installBtn.hidden = true;
+        deferredInstallPrompt.prompt();
+        try {
+            const { outcome } = await deferredInstallPrompt.userChoice;
+            showToast(outcome === 'accepted' ? "Ilova o'rnatildi 🎉" : "O'rnatish bekor qilindi");
+        } catch (e) { /* jim o'tkazamiz */ }
+        deferredInstallPrompt = null;
+    });
+    window.addEventListener('appinstalled', () => {
+        installBtn.hidden = true;
+        deferredInstallPrompt = null;
+    });
 })();

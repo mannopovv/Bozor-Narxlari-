@@ -1,3 +1,6 @@
+// Fayl nomi 'sw.js' — bu haqiqiy Service Worker fayli, u index.js orqali navigator.serviceWorker.register('sw.js') bilan ro'yxatdan o'tkaziladi.
+// ESLATMA: bu faylni oddiy <script> sifatida HTML ichiga ulash XATO edi (self.addEventListener('install'...) window kontekstida hech narsa qilmaydi).
+// Endi u faqat Service Worker sifatida ishlatiladi.
 // Bozor narxlari — oddiy "app shell" keshlash orqali offline ishlashni ta'minlaydi.
 // Narx ma'lumotlarining o'zi window.storage orqali saqlanadi (bu fayl bilan bog'liq emas);
 // bu service worker faqat HTML/CSS/JS qobig'ini keshlab, internetsiz ochilishga yordam beradi.
