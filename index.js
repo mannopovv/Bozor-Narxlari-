@@ -1,4 +1,45 @@
 (function () {
+    // ---------- window.storage shim ----------
+    // Bu ilova asli Claude.ai artifact muhitidagi `window.storage` API'siga mo'ljallangan edi,
+    // u faqat Claude.ai ichida mavjud. Ilovani oddiy brauzerda yoki telefonga PWA sifatida
+    // o'rnatib ishlatish uchun (masalan, GitHub Pages'da), shu yerda xuddi shu interfeysni
+    // localStorage ustida qayta yaratamiz — shunda barcha window.storage.get/set/delete/list
+    // chaqiruvlari o'zgarishsiz ishlayveradi va ma'lumotlar haqiqatan ham saqlanadi.
+    // MUHIM: bu faqat shu qurilma/brauzerda saqlanadi. "shared"=true bo'lsa ham, haqiqiy
+    // ko'p-foydalanuvchili umumiy taxta uchun serverga ulangan backend kerak bo'ladi —
+    // buni localStorage almashtira olmaydi, shuning uchun umumiy taxta funksiyasi hozircha
+    // faqat shu brauzerning o'zida "umumiy" nomli alohida to'plam sifatida ishlaydi.
+    if (!window.storage) {
+        const LS_PREFIX = 'bozor_storage__';
+        const ns = (shared) => LS_PREFIX + (shared ? 'shared__' : 'personal__');
+        window.storage = {
+            async get(key, shared) {
+                const raw = window.localStorage.getItem(ns(shared) + key);
+                if (raw === null) throw new Error(`Kalit topilmadi: ${key}`);
+                return { key, value: raw, shared: !!shared };
+            },
+            async set(key, value, shared) {
+                window.localStorage.setItem(ns(shared) + key, value);
+                return { key, value, shared: !!shared };
+            },
+            async delete(key, shared) {
+                const fullKey = ns(shared) + key;
+                const existed = window.localStorage.getItem(fullKey) !== null;
+                window.localStorage.removeItem(fullKey);
+                return { key, deleted: existed, shared: !!shared };
+            },
+            async list(prefix, shared) {
+                const p = ns(shared) + (prefix || '');
+                const keys = [];
+                for (let i = 0; i < window.localStorage.length; i++) {
+                    const k = window.localStorage.key(i);
+                    if (k && k.indexOf(p) === 0) keys.push(k.slice(ns(shared).length));
+                }
+                return { keys, prefix, shared: !!shared };
+            }
+        };
+    }
+
     // hex source of truth per category — used for solid borders and a soft tinted background
     const CATEGORY_META = {
         'sabzavot': { label: "Sabzavotlar", icon: "🥕", color: "#7A8B4A" },
@@ -534,11 +575,10 @@
     });
 
     // ---------- bozorlar narx indeksi ----------
-    function renderMarketIndex() {
-        const list = $('#marketIndexList');
-        if (entries.length === 0) { list.innerHTML = '<div class="shopping-empty">Hozircha ma\'lumot yo\'q.</div>'; return; }
-        // har bir bozor uchun, har bir mahsulotning o'sha bozordagi eng so'nggi narxini
-        // shu mahsulotning barcha bozorlardagi o'rtacha narxiga nisbatan solishtiramiz
+    // har bir bozor uchun, har bir mahsulotning o'sha bozordagi eng so'nggi narxini
+    // shu mahsulotning barcha bozorlardagi o'rtacha narxiga nisbatan solishtirib, umumiy indeks chiqaradi
+    // (100 = o'rtacha; bu funksiya narx indeksi panelida ham, xarita panelida ham ishlatiladi)
+    function computeMarketIndexData() {
         const grouped = groupByProduct(entries);
         const ratiosByMarket = {};
         MARKETS.forEach(m => ratiosByMarket[m] = []);
@@ -551,11 +591,17 @@
             if (!avg) return;
             vals.forEach(e => { if (ratiosByMarket[e.market]) ratiosByMarket[e.market].push(e.price / avg); });
         });
-        const indexData = MARKETS.map(m => {
+        return MARKETS.map(m => {
             const ratios = ratiosByMarket[m];
             const idx = ratios.length ? (ratios.reduce((a, b) => a + b, 0) / ratios.length) * 100 : null;
             return { market: m, idx };
         }).filter(d => d.idx !== null).sort((a, b) => a.idx - b.idx);
+    }
+
+    function renderMarketIndex() {
+        const list = $('#marketIndexList');
+        if (entries.length === 0) { list.innerHTML = '<div class="shopping-empty">Hozircha ma\'lumot yo\'q.</div>'; return; }
+        const indexData = computeMarketIndexData();
 
         if (indexData.length === 0) { list.innerHTML = '<div class="shopping-empty">Solishtirish uchun yetarli ma\'lumot yo\'q (kamida 2 bozorda bir xil mahsulot kerak).</div>'; return; }
         const maxDev = Math.max(...indexData.map(d => Math.abs(d.idx - 100)), 10);
@@ -572,6 +618,208 @@
     $('#toggleIndex').addEventListener('click', () => {
         $('#indexPanel').classList.toggle('open');
         if ($('#indexPanel').classList.contains('open')) renderMarketIndex();
+    });
+
+    // ---------- bozorlarni xaritada solishtirish ----------
+    // Toshkentdagi haqiqiy bozorlarning taxminiy geografik koordinatalari (Google xaritalar ma'lumotlari asosida)
+    const MARKET_COORDS = {
+        "Chorsu bozori": { lat: 41.3267, lng: 69.2350 },
+        "Oloy bozori": { lat: 41.3194, lng: 69.2853 },
+        "Qo'ylik bozori": { lat: 41.2373, lng: 69.3294 },
+        "Farhod bozori": { lat: 41.2859, lng: 69.1905 },
+        "Beshqozon bozori": { lat: 41.3476, lng: 69.2855 }
+    };
+    let userLocation = null; // {lat, lng} — faqat foydalanuvchi ruxsat bersa to'ldiriladi
+
+    // ikkita geografik nuqta orasidagi masofani km da hisoblaydi (Haversine formulasi)
+    function haversineKm(a, b) {
+        const R = 6371;
+        const dLat = (b.lat - a.lat) * Math.PI / 180;
+        const dLng = (b.lng - a.lng) * Math.PI / 180;
+        const la1 = a.lat * Math.PI / 180, la2 = b.lat * Math.PI / 180;
+        const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLng / 2) ** 2;
+        return 2 * R * Math.asin(Math.sqrt(h));
+    }
+
+    $('#locateBtn').addEventListener('click', () => {
+        if (!navigator.geolocation) { showToast("Bu qurilmada joylashuvni aniqlab bo'lmaydi"); return; }
+        $('#locateBtn').textContent = '📍 Aniqlanmoqda...';
+        navigator.geolocation.getCurrentPosition((pos) => {
+            userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+            $('#locateBtn').textContent = '📍 Joylashuv aniqlandi ✓';
+            renderMarketMap();
+        }, () => {
+            $('#locateBtn').textContent = '📍 Joylashuvimni aniqlash';
+            showToast("Joylashuvni aniqlab bo'lmadi — brauzer ruxsatini tekshiring");
+        }, { enableHighAccuracy: false, timeout: 8000 });
+    });
+
+    // haqiqiy xarita (OpenStreetMap tayllari, Leaflet kutubxonasi orqali — API kalit shart emas)
+    let leafletMap = null;
+    let leafletMarketLayer = null;
+    let leafletUserMarker = null;
+    function pinIconHtml(bgColor, glyph) {
+        return `<div class="market-pin" style="background:${bgColor}"><span>${glyph}</span></div>`;
+    }
+    function ensureLeafletMap() {
+        if (leafletMap || typeof L === 'undefined') return;
+        leafletMap = L.map('realMap', { scrollWheelZoom: false }).setView([41.30, 69.25], 11);
+        leafletMap.on('click', () => leafletMap.scrollWheelZoom.enable());
+        $('#realMap').addEventListener('mouseleave', () => leafletMap.scrollWheelZoom.disable());
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 18,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> hissa qo\'shuvchilari'
+        }).on('tileerror', () => { $('#mapOfflineNote').hidden = false; }).addTo(leafletMap);
+        leafletMarketLayer = L.layerGroup().addTo(leafletMap);
+    }
+
+    function renderMarketMap() {
+        if (typeof L === 'undefined') {
+            $('#mapOfflineNote').hidden = false;
+            $('#mapOfflineNote').textContent = "🗺️ Xarita kutubxonasini yuklab bo'lmadi — internet aloqasini tekshirib, sahifani qayta yuklang.";
+            return;
+        }
+        ensureLeafletMap();
+        if (!leafletMap) return;
+
+        const coordsList = Object.entries(MARKET_COORDS).map(([m, c]) => ({ market: m, ...c }));
+
+        // savatga mahsulot solingan bo'lsa — savat narxiga qarab, aks holda umumiy narx indeksiga qarab rangla
+        const useBasket = basket.size > 0;
+        const marketTotals = useBasket ? computeMarketTotals() : [];
+        const indexData = useBasket ? [] : computeMarketIndexData();
+        const totalsByMarket = {};
+        if (useBasket) marketTotals.forEach(t => { totalsByMarket[t.market] = t.sum; });
+        else indexData.forEach(d => { totalsByMarket[d.market] = d.idx; });
+        const values = Object.values(totalsByMarket);
+        const minV = values.length ? Math.min(...values) : 0;
+        const maxV = values.length ? Math.max(...values) : 1;
+
+        function colorFor(market) {
+            if (!(market in totalsByMarket)) return '#8b8378';
+            if (values.length < 2 || maxV === minV) return '#3E7C7F';
+            const t = (totalsByMarket[market] - minV) / (maxV - minV); // 0 = eng arzon, 1 = eng qimmat
+            return t < 0.34 ? '#7A8B4A' : t > 0.66 ? '#B33A3A' : '#E8A33D';
+        }
+
+        leafletMarketLayer.clearLayers();
+        const bounds = [];
+        coordsList.forEach(c => {
+            bounds.push([c.lat, c.lng]);
+            const color = colorFor(c.market);
+            const icon = L.divIcon({
+                className: '', html: pinIconHtml(color, '🧺'),
+                iconSize: [30, 30], iconAnchor: [15, 30], popupAnchor: [0, -28]
+            });
+            const marker = L.marker([c.lat, c.lng], { icon, keyboard: true, alt: c.market }).addTo(leafletMarketLayer);
+            let valText = '—';
+            if (useBasket && totalsByMarket[c.market] !== undefined) valText = `Savat: ${fmt(totalsByMarket[c.market])} so'm`;
+            else if (!useBasket && totalsByMarket[c.market] !== undefined) valText = `Narx indeksi: ${totalsByMarket[c.market].toFixed(0)}`;
+            const dist = userLocation ? haversineKm(userLocation, c) : null;
+            const distLine = dist !== null ? `<div class="map-popup-line">📍 ${dist < 10 ? dist.toFixed(1) : Math.round(dist)} km sizdan</div>` : '';
+            const popupEl = document.createElement('div');
+            popupEl.innerHTML = `<div class="map-popup-title">${c.market}</div><div class="map-popup-line">${valText}</div>${distLine}<button class="map-popup-btn" type="button">Shu bozor bo'yicha filtrlash</button>`;
+            popupEl.querySelector('.map-popup-btn').addEventListener('click', () => {
+                marketFilter.value = c.market;
+                $('#mapPanel').classList.remove('open');
+                render();
+                showToast(`${c.market} bo'yicha filtrlandi`);
+            });
+            marker.bindPopup(popupEl);
+        });
+
+        if (leafletUserMarker) { leafletMarketLayer.removeLayer(leafletUserMarker); leafletUserMarker = null; }
+        if (userLocation) {
+            bounds.push([userLocation.lat, userLocation.lng]);
+            const userIcon = L.divIcon({ className: '', html: '<div class="user-pin"></div>', iconSize: [16, 16], iconAnchor: [8, 8] });
+            leafletUserMarker = L.marker([userLocation.lat, userLocation.lng], { icon: userIcon, alt: 'Siz', zIndexOffset: 1000 })
+                .bindPopup('📍 Siz shu yerdasiz')
+                .addTo(leafletMarketLayer);
+        }
+        if (bounds.length) leafletMap.fitBounds(bounds, { padding: [36, 36], maxZoom: 13 });
+
+        $('#mapNote').textContent = useBasket
+            ? "Belgilar savatingizdagi mahsulotlar umumiy narxiga qarab ranglangan — yashil arzonroq, qizil qimmatroq. Belgiga bosib to'liq ma'lumotni ko'ring."
+            : "Belgilar bozorlarning umumiy narx indeksiga qarab ranglangan — yashil arzonroq, qizil qimmatroq. Belgiga bosib to'liq ma'lumotni ko'ring.";
+
+        $('#mapList').innerHTML = coordsList.map(c => {
+            const dist = userLocation ? haversineKm(userLocation, c) : null;
+            const distText = dist !== null ? `${dist < 10 ? dist.toFixed(1) : Math.round(dist)} km` : '—';
+            let valText = '—';
+            if (useBasket && totalsByMarket[c.market] !== undefined) valText = `${fmt(totalsByMarket[c.market])} so'm`;
+            else if (!useBasket && totalsByMarket[c.market] !== undefined) valText = totalsByMarket[c.market].toFixed(0);
+            return `<div class="index-row">
+          <span class="index-market-name">${c.market}</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:12.5px;opacity:.75">📍 ${distText}</span>
+          <span class="index-value">${valText}</span>
+        </div>`;
+        }).join('');
+    }
+    $('#toggleMap').addEventListener('click', () => {
+        $('#mapPanel').classList.toggle('open');
+        if ($('#mapPanel').classList.contains('open')) {
+            // panel ochilish animatsiyasi tugagach xaritani chizamiz — aks holda konteyner
+            // hali 0 balandlikda bo'lganida Leaflet uni noto'g'ri o'lchamda ishga tushiradi
+            setTimeout(() => {
+                renderMarketMap();
+                if (leafletMap) leafletMap.invalidateSize();
+            }, 370);
+        }
+    });
+
+    // ---------- oylik byudjet rejalashtiruvchi ----------
+    const BUDGET_KEY = 'bozor-budget-v1';
+    let monthlyBudget = 0;
+    async function loadBudget() {
+        try {
+            const res = await window.storage.get(BUDGET_KEY, false);
+            monthlyBudget = res && res.value ? Number(res.value) || 0 : 0;
+        } catch (e) { monthlyBudget = 0; }
+        $('#budgetInput').value = monthlyBudget || '';
+    }
+    async function saveBudget() {
+        try { await window.storage.set(BUDGET_KEY, String(monthlyBudget), false); } catch (e) { }
+    }
+    function renderBudget() {
+        const wrap = $('#budgetSummary');
+        if (!monthlyBudget || monthlyBudget <= 0) {
+            wrap.innerHTML = `<div class="budget-note">Avval yuqorida oylik byudjetingizni kiritib, "Saqlash" tugmasini bosing.</div>`;
+            return;
+        }
+        if (shoppingList.length === 0) {
+            wrap.innerHTML = `<div class="budget-note">Xarid ro'yxatingiz bo'sh — mahsulot qo'shsangiz, ularning taxminiy umumiy narxini byudjetingiz bilan solishtiramiz.</div>`;
+            return;
+        }
+        let total = 0, matched = 0;
+        const rows = shoppingList.map(item => {
+            const info = latestPriceInfo(item.product);
+            if (info) { total += info.avg; matched++; }
+            return { product: item.product, price: info ? info.avg : null, checked: item.checked };
+        });
+        const pct = Math.min(100, (total / monthlyBudget) * 100);
+        const state = pct >= 100 ? 'over' : pct >= 80 ? 'warn' : '';
+        const remaining = monthlyBudget - total;
+
+        wrap.innerHTML = `
+      <div class="budget-progress-track">
+        <div class="budget-progress-fill ${state}" style="width:${Math.max(4, pct).toFixed(1)}%"></div>
+        <div class="budget-progress-label">${pct.toFixed(0)}%</div>
+      </div>
+      <div class="budget-line"><span>Xarid ro'yxati taxminiy narxi</span><b>${fmt(total)} so'm</b></div>
+      <div class="budget-line"><span>Oylik byudjet</span><b>${fmt(monthlyBudget)} so'm</b></div>
+      <div class="budget-line"><span>${remaining >= 0 ? "Qolgan mablag'" : "Byudjetdan oshib ketdi"}</span><b style="color:${remaining >= 0 ? 'var(--up)' : 'var(--down)'}">${fmt(Math.abs(remaining))} so'm</b></div>
+      <div class="budget-note">${matched < shoppingList.length ? `${shoppingList.length - matched} ta mahsulot uchun hali narx kiritilmagan, shu sabab hisoblash taxminiy.` : "Barcha mahsulotlar uchun so'nggi narxlar asosida hisoblandi."}</div>`;
+    }
+    $('#budgetSaveBtn').addEventListener('click', async () => {
+        const val = parseFloat($('#budgetInput').value);
+        monthlyBudget = (val && val > 0) ? val : 0;
+        await saveBudget();
+        renderBudget();
+        showToast(monthlyBudget ? "Byudjet saqlandi" : "Byudjet tozalandi");
+    });
+    $('#toggleBudget').addEventListener('click', () => {
+        $('#budgetPanel').classList.toggle('open');
+        if ($('#budgetPanel').classList.contains('open')) renderBudget();
     });
 
     // ---------- mavsumiy mahsulotlar taqvimi ----------
@@ -891,6 +1139,8 @@
         if ($('#indexPanel').classList.contains('open')) renderMarketIndex();
         if ($('#leadersPanel').classList.contains('open')) renderLeaders();
         if ($('#recipesPanel').classList.contains('open')) renderRecipes();
+        if ($('#budgetPanel').classList.contains('open')) renderBudget();
+        if ($('#mapPanel').classList.contains('open')) renderMarketMap();
 
         if (list.length === 0) {
             const isFavView = activeCategory === '__favorites';
@@ -948,7 +1198,7 @@
                 .map(([m, e]) => `<div class="market-row"><span class="m-name">${m}</span><span class="m-price">${fmt(e.price)}</span></div>`)
                 .join('');
 
-            const sparkSvg = pts ? `<div class="spark-wrap" data-product="${p}" title="To'liq grafikni ko'rish"><svg class="spark" width="100%" height="44" viewBox="0 0 220 44" preserveAspectRatio="none">
+            const sparkSvg = pts ? `<div class="spark-wrap" data-product="${p}" title="To'liq grafikni ko'rish" tabindex="0" role="button" aria-label="${p} narx grafigini ko'rish"><svg class="spark" width="100%" height="44" viewBox="0 0 220 44" preserveAspectRatio="none">
           <polyline points="${pts}" fill="none" stroke="${d.trend === 'up' ? 'var(--down)' : d.trend === 'down' ? 'var(--up)' : 'var(--teal-light)'}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
         </svg></div>` : '';
 
@@ -993,6 +1243,9 @@
         });
         board.querySelectorAll('.spark-wrap').forEach(el => {
             el.addEventListener('click', (e) => { e.stopPropagation(); openChartModal(el.dataset.product); });
+            el.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); openChartModal(el.dataset.product); }
+            });
         });
 
         board.querySelectorAll('.tag').forEach(attachTilt);
@@ -1012,20 +1265,62 @@
         $('#chartModalTitle').textContent = product;
         $('#chartModalSub').textContent = `${list.length} ta yozuv · so'm / ${list[list.length - 1].unit}`;
 
+        // ---------- 7 kunlik narx bashorati (oddiy chiziqli regressiya) ----------
+        // Bu murakkab AI modeli emas — mavjud narx nuqtalari orqali eng mos to'g'ri chiziqni
+        // topib (kichik kvadratlar usuli), shu tendensiyani 7 kun oldinga davom ettiradi.
+        // Kamida 3 ta yozuv bo'lganda ma'noli bo'ladi; natija haqiqiy bozor narxidan farq qilishi mumkin.
+        let forecast = null;
+        if (list.length >= 3) {
+            const x0 = list[0].ts;
+            const xs = list.map(e => (e.ts - x0) / 86400000); // kunlarda
+            const ys = list.map(e => e.price);
+            const n = xs.length;
+            const sumX = xs.reduce((a, b) => a + b, 0), sumY = ys.reduce((a, b) => a + b, 0);
+            const sumXY = xs.reduce((s, x, i) => s + x * ys[i], 0);
+            const sumXX = xs.reduce((s, x) => s + x * x, 0);
+            const denom = (n * sumXX - sumX * sumX);
+            if (denom !== 0) {
+                const slope = (n * sumXY - sumX * sumY) / denom;
+                const intercept = (sumY - slope * sumX) / n;
+                const lastPrice = ys[ys.length - 1];
+                const forecastDay = xs[xs.length - 1] + 7;
+                let predicted = slope * forecastDay + intercept;
+                // haqiqiy bozorlarda 7 kunda narx kamdan-kam ±35% dan ko'p o'zgaradi —
+                // shovqinli ma'lumot regressiyani haddan tashqari cho'zib yubormasligi uchun cheklaymiz
+                predicted = Math.max(lastPrice * 0.65, Math.min(lastPrice * 1.35, predicted));
+                predicted = Math.max(0, predicted);
+                const pct = lastPrice ? ((predicted - lastPrice) / lastPrice) * 100 : 0;
+                forecast = { day: forecastDay, price: predicted, pct };
+            }
+        }
+
         const w = 700, h = 320, padL = 55, padR = 20, padT = 20, padB = 40;
         const prices = list.map(e => e.price);
-        const min = Math.min(...prices), max = Math.max(...prices);
+        const allValues = forecast ? [...prices, forecast.price] : prices;
+        const min = Math.min(...allValues), max = Math.max(...allValues);
         const range = (max - min) || 1;
         const innerW = w - padL - padR, innerH = h - padT - padB;
+        // bashorat bo'lsa, oxirgi haqiqiy nuqtadan keyin bashorat uchun o'ng tomondan joy qoldiramiz
+        const slotCount = forecast ? list.length : Math.max(1, list.length - 1);
 
         const points = list.map((e, i) => {
-            const x = padL + (list.length === 1 ? innerW / 2 : (i / (list.length - 1)) * innerW);
+            const x = padL + (list.length === 1 ? innerW / 2 : (i / slotCount) * innerW);
             const y = padT + innerH - ((e.price - min) / range) * innerH;
             return { x, y, e };
         });
 
         const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
         const areaPath = `${linePath} L${points[points.length - 1].x.toFixed(1)},${padT + innerH} L${points[0].x.toFixed(1)},${padT + innerH} Z`;
+
+        let forecastSvg = '';
+        if (forecast) {
+            const fx = padL + innerW;
+            const fy = padT + innerH - ((forecast.price - min) / range) * innerH;
+            const lastP = points[points.length - 1];
+            forecastSvg = `<line x1="${lastP.x.toFixed(1)}" y1="${lastP.y.toFixed(1)}" x2="${fx.toFixed(1)}" y2="${fy.toFixed(1)}" stroke="var(--saffron)" stroke-width="2.5" stroke-dasharray="5,5" stroke-linecap="round"/>
+        <circle cx="${fx.toFixed(1)}" cy="${fy.toFixed(1)}" r="5.5" fill="var(--saffron)" stroke="var(--card-bg)" stroke-width="2"/>
+        <text x="${(fx - 6).toFixed(1)}" y="${(fy - 12).toFixed(1)}" text-anchor="end" font-size="10.5" fill="var(--saffron)" font-weight="700" font-family="JetBrains Mono, monospace">~${fmt(forecast.price)}</text>`;
+        }
 
         // Y o'qi belgilari
         const ySteps = 4;
@@ -1044,6 +1339,10 @@
                 xLabels += `<text x="${p.x.toFixed(1)}" y="${h - padB + 18}" text-anchor="middle" font-size="10.5" fill="var(--ink)" opacity="0.65" font-family="JetBrains Mono, monospace">${formatDateShort(p.e.ts)}</text>`;
             }
         });
+        if (forecast) {
+            const fx = padL + innerW;
+            xLabels += `<text x="${fx.toFixed(1)}" y="${h - padB + 18}" text-anchor="middle" font-size="10.5" fill="var(--saffron)" font-weight="700" font-family="JetBrains Mono, monospace">+7 kun</text>`;
+        }
 
         let dotsSvg = '';
         points.forEach((p, i) => {
@@ -1059,9 +1358,20 @@
       ${axisSvg}
       <path d="${areaPath}" fill="var(--teal)" opacity="0.08"/>
       <path d="${linePath}" fill="none" stroke="var(--teal)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      ${forecastSvg}
       ${xLabels}
       ${dotsSvg}
     `;
+
+        const forecastBox = $('#chartForecast');
+        if (forecast) {
+            const dirWord = forecast.pct > 1.5 ? 'oshishi' : forecast.pct < -1.5 ? 'pasayishi' : "deyarli o'zgarmasligi";
+            forecastBox.hidden = false;
+            forecastBox.innerHTML = `🔮 Mavjud tendensiyaga asoslanib, taxminan <b>7 kundan keyin</b> narx <b>${dirWord}</b> mumkin — taxminiy qiymat: <b>${fmt(forecast.price)}</b> so'm (${forecast.pct >= 0 ? '+' : ''}${forecast.pct.toFixed(1)}%). Bu shunchaki so'nggi narxlar tendensiyasiga asoslangan taxmin, kafolat emas.`;
+        } else {
+            forecastBox.hidden = false;
+            forecastBox.innerHTML = `🔮 Bashorat qilish uchun kamida 3 ta narx yozuvi kerak — yana narx qo'shsangiz, bashorat shu yerda paydo bo'ladi.`;
+        }
 
         const tooltip = $('#chartModalTooltip');
         svgEl.querySelectorAll('.chart-pt').forEach(dot => {
@@ -1082,6 +1392,9 @@
     }
     $('#chartClose').addEventListener('click', () => chartModal.classList.remove('show'));
     chartModal.addEventListener('click', (e) => { if (e.target === chartModal) chartModal.classList.remove('show'); });
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && chartModal.classList.contains('show')) chartModal.classList.remove('show');
+    });
 
     // sichqoncha harakatiga qarab yengil 3D moyillik (tilt) effekti
     const supportsHover = window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches;
@@ -1536,6 +1849,79 @@
         });
     }
 
+    // ---------- ovozli buyruqlar (masalan: "Kartoshka narxini ko'rsat", "narx qo'sh", "qorong'i rejim") ----------
+    // ESLATMA: brauzerlarning nutqni tanish tizimlari hozircha o'zbek tilini to'liq
+    // qo'llab-quvvatlamaydi, shu sabab yuqoridagi mikrofon tugmasi kabi 'ru-RU' bilan ishlaymiz —
+    // bu 100% aniq emas, lekin lotin harflaridagi so'zlarni ham taxminan tanib oladi.
+    const voiceCmdBtn = $('#voiceCmdBtn');
+    if (!SpeechRecognitionCtor) {
+        voiceCmdBtn.style.display = 'none';
+    } else {
+        const cmdRecognition = new SpeechRecognitionCtor();
+        cmdRecognition.lang = 'ru-RU';
+        cmdRecognition.interimResults = false;
+        cmdRecognition.maxAlternatives = 1;
+        let cmdListening = false;
+
+        function normalizeUz(s) {
+            return s.toLowerCase()
+                .replace(/[’‘`ʻʼ]/g, "'")
+                .replace(/[^a-z0-9а-яё' ]/gi, '')
+                .trim();
+        }
+
+        function closeAllPanels() {
+            document.querySelectorAll('.panel.open').forEach(p => p.classList.remove('open'));
+        }
+
+        function runVoiceCommand(rawTranscript) {
+            const t = normalizeUz(rawTranscript);
+            showToast(`🎙️ Eshitildi: "${rawTranscript}"`);
+
+            if (/qo'?sh|добав/.test(t) && /narx|цен/.test(t)) { $('#toggleAdd').click(); return; }
+            if (/xarid|покуп/.test(t)) { $('#toggleShopping').classList.contains('open') || $('#toggleShopping').click(); return; }
+            if (/byudjet|бюджет/.test(t)) { $('#toggleBudget').classList.contains('open') || $('#toggleBudget').click(); return; }
+            if (/xarita|карта/.test(t)) { $('#toggleMap').classList.contains('open') || $('#toggleMap').click(); return; }
+            if (/qorong|tungi|темн|ноч/.test(t)) { if (document.documentElement.dataset.theme !== 'dark') $('#themeToggle').click(); return; }
+            if (/yorug|kunduzgi|светл|дневн/.test(t)) { if (document.documentElement.dataset.theme === 'dark') $('#themeToggle').click(); return; }
+            if (/arzon|дешев/.test(t)) { $('#sortFilter').value = 'price-asc'; render(); showToast('Arzondan qimmatga saralandi'); return; }
+            if (/qimmat|дорог/.test(t)) { $('#sortFilter').value = 'price-desc'; render(); showToast('Qimmatdan arzonga saralandi'); return; }
+            if (/yop|bekor|закр|отмен/.test(t)) { closeAllPanels(); return; }
+
+            // aks holda — mahsulot nomini topishga harakat qilamiz ("kartoshka narxini ko'rsat" -> "kartoshka")
+            const candidates = Object.keys(PRODUCT_ICONS)
+                .map(p => ({ p, np: normalizeUz(p) }))
+                .filter(c => c.np.length >= 3)
+                .sort((a, b) => b.np.length - a.np.length);
+            const found = candidates.find(c => t.includes(c.np) || c.np.includes(t.split(' ')[0] || ''));
+            if (found) {
+                $('#searchBox').value = found.p;
+                render();
+                showToast(`"${found.p}" topildi`);
+                setTimeout(() => openChartModal(found.p), 300);
+            } else {
+                showToast("Buyruq tushunilmadi — boshqacha urinib ko'ring");
+            }
+        }
+
+        cmdRecognition.addEventListener('result', (e) => runVoiceCommand(e.results[0][0].transcript));
+        cmdRecognition.addEventListener('end', () => { cmdListening = false; voiceCmdBtn.classList.remove('listening'); });
+        cmdRecognition.addEventListener('error', () => {
+            cmdListening = false;
+            voiceCmdBtn.classList.remove('listening');
+            showToast("Ovozli buyruqni aniqlab bo'lmadi");
+        });
+        voiceCmdBtn.addEventListener('click', () => {
+            if (cmdListening) { cmdRecognition.stop(); return; }
+            try {
+                cmdRecognition.start();
+                cmdListening = true;
+                voiceCmdBtn.classList.add('listening');
+                showToast('🎙️ Tinglanmoqda...');
+            } catch (e) { /* allaqachon ishga tushgan bo'lishi mumkin */ }
+        });
+    }
+
     // ---------- til almashtirish ----------
     const TRANSLATIONS = {
         eyebrow: { uz: "Toshkent bozorlari", ru: "Ташкентские базары", en: "Tashkent bazaars" },
@@ -1671,11 +2057,12 @@
     window.addEventListener('online', () => { syncPendingEntries(); });
 
     const introStart = performance.now();
-    Promise.all([loadShopping(), loadAlerts(), loadNotes(), loadAuthor()]).then(() => loadEntries()).then(() => {
+    Promise.all([loadShopping(), loadAlerts(), loadNotes(), loadAuthor(), loadBudget()]).then(() => loadEntries()).then(() => {
         pendingCount = entries.filter(e => e.pending).length;
         updateSyncBadge();
         if (navigator.onLine && pendingCount > 0) syncPendingEntries();
         moveIndicator(tabsNav.querySelector('.tab.active'));
+        checkIncomingShare();
         const elapsed = performance.now() - introStart;
         const remaining = Math.max(0, 550 - elapsed); // "bozor" bir zumda ochilib qolmasligi uchun eng kam ko'rsatish vaqti
         setTimeout(() => {
@@ -1686,6 +2073,124 @@
             }
         }, remaining);
     });
+
+    // ---------- chek/rasm orqali narxni aniqlash (OCR) ----------
+    // Tesseract.js — bepul, ochiq manbali, brauzerda ishlaydigan OCR kutubxonasi (API kalit shart emas).
+    // Birinchi marta ishlatilganda internetdan yuklab olinadi, keyin brauzer keshida qoladi.
+    const ocrBtn = $('#ocrBtn');
+    const ocrFileInput = $('#ocrFileInput');
+    let tesseractLoadPromise = null;
+    function loadTesseract() {
+        if (window.Tesseract) return Promise.resolve(window.Tesseract);
+        if (tesseractLoadPromise) return tesseractLoadPromise;
+        tesseractLoadPromise = new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+            s.onload = () => resolve(window.Tesseract);
+            s.onerror = () => reject(new Error('OCR kutubxonasi yuklanmadi'));
+            document.head.appendChild(s);
+        });
+        return tesseractLoadPromise;
+    }
+    ocrBtn.addEventListener('click', () => ocrFileInput.click());
+    ocrFileInput.addEventListener('change', async () => {
+        const file = ocrFileInput.files[0];
+        if (!file) return;
+        ocrBtn.classList.add('busy');
+        showToast('📷 Rasm o\'qilmoqda, biroz kuting...');
+        try {
+            const Tesseract = await loadTesseract();
+            const { data } = await Tesseract.recognize(file, 'eng');
+            const text = (data && data.text) || '';
+            // matndagi barcha raqam ketma-ketliklarini topamiz (bo'sh joy/vergul ajratuvchi bo'lishi mumkin)
+            const rawMatches = text.match(/\d[\d ,.]{0,9}\d|\d{2,}/g) || [];
+            const nums = rawMatches
+                .map(m => Number(m.replace(/[^\d]/g, '')))
+                .filter(n => n >= 100 && n <= 100000000); // haqiqatga yaqin narx oralig'i
+            if (nums.length) {
+                // chekda odatda eng katta raqam — umumiy summa yoki narx bo'ladi
+                const guess = Math.max(...nums);
+                $('#inPrice').value = guess;
+                showToast(`Taxminiy narx: ${fmt(guess)} so'm — to'g'riligini tekshirib, kerak bo'lsa tahrirlang`);
+            } else {
+                showToast("Rasmdan raqam aniqlanmadi — qo'lda kiriting");
+            }
+        } catch (e) {
+            showToast("Rasmni o'qib bo'lmadi — internetni tekshiring yoki qo'lda kiriting");
+        } finally {
+            ocrBtn.classList.remove('busy');
+            ocrFileInput.value = '';
+        }
+    });
+
+    // ---------- do'stlar bilan narx taqqoslash (havola orqali ulashish) ----------
+    // Bu haqiqiy jonli sinxronizatsiya emas (buning uchun server kerak bo'lardi) — aksincha,
+    // joriy narxlaringiz havola ichiga "suratga olinadi", do'stingiz shu havolani ochganda
+    // ularni o'z ro'yxatiga qo'shish-qo'shmasligini tanlaydi.
+    function utf8ToB64(str) { return btoa(unescape(encodeURIComponent(str))); }
+    function b64ToUtf8(str) { return decodeURIComponent(escape(atob(str))); }
+
+    $('#shareLinkBtn').addEventListener('click', async () => {
+        if (entries.length === 0) { showToast("Ulashish uchun hali narxingiz yo'q"); return; }
+        const grouped = groupByProduct(entries);
+        const latest = Object.values(grouped).map(list => list.slice().sort((a, b) => b.ts - a.ts)[0]);
+        latest.sort((a, b) => b.ts - a.ts);
+        const snapshot = latest.slice(0, 60).map(e => [e.market, e.product, e.category, e.price, e.unit, e.ts]);
+        const payload = { v: 1, from: authorName || "Do'stingiz", items: snapshot };
+        let url;
+        try {
+            url = `${location.origin}${location.pathname}#share=${encodeURIComponent(utf8ToB64(JSON.stringify(payload)))}`;
+        } catch (e) { showToast("Havola yaratib bo'lmadi"); return; }
+        try {
+            await navigator.clipboard.writeText(url);
+            showToast(`🔗 Havola nusxalandi (${snapshot.length} ta narx) — do'stingizga yuboring`);
+        } catch (e) {
+            window.prompt("Havolani nusxalab, do'stingizga yuboring:", url);
+        }
+    });
+
+    let pendingShareImport = null;
+    function checkIncomingShare() {
+        const m = location.hash.match(/#share=([^&]+)/);
+        if (!m) return;
+        try {
+            const payload = JSON.parse(b64ToUtf8(decodeURIComponent(m[1])));
+            if (!payload || !Array.isArray(payload.items) || !payload.items.length) return;
+            pendingShareImport = payload;
+            $('#shareImportSub').textContent = `${payload.from || "Do'stingiz"} sizga ${payload.items.length} ta narxni ulashdi`;
+            $('#shareImportList').innerHTML = payload.items.slice(0, 40).map(it => {
+                const [market, product, , price, unit] = it;
+                return `<div class="share-import-row"><span>${PRODUCT_ICONS[product] || DEFAULT_ICON} ${product} <span style="opacity:.55">(${market})</span></span><b>${fmt(price)} so'm/${unit}</b></div>`;
+            }).join('') + (payload.items.length > 40 ? `<div class="share-import-row">... va yana ${payload.items.length - 40} ta</div>` : '');
+            $('#shareImportModal').classList.add('show');
+        } catch (e) { /* noto'g'ri yoki buzilgan havola — e'tiborsiz qoldiramiz */ }
+    }
+    function clearShareHash() {
+        history.replaceState(null, '', location.pathname + location.search);
+    }
+    $('#shareImportClose').addEventListener('click', () => { $('#shareImportModal').classList.remove('show'); clearShareHash(); });
+    $('#shareImportIgnoreBtn').addEventListener('click', () => { $('#shareImportModal').classList.remove('show'); clearShareHash(); });
+    $('#shareImportAcceptBtn').addEventListener('click', async () => {
+        if (!pendingShareImport) return;
+        let nextId = entries.length ? Math.max(...entries.map(e => e.id)) + 1 : 1;
+        const existingKeys = new Set(entries.map(e => `${e.market}|${e.product}|${e.price}|${e.ts}`));
+        let added = 0;
+        pendingShareImport.items.forEach(it => {
+            const [market, product, category, price, unit, ts] = it;
+            const key = `${market}|${product}|${price}|${ts}`;
+            if (existingKeys.has(key)) return;
+            entries.push({ id: nextId++, market, product, category, price, unit, ts, author: pendingShareImport.from });
+            existingKeys.add(key);
+            added++;
+        });
+        await saveEntries();
+        render();
+        $('#shareImportModal').classList.remove('show');
+        clearShareHash();
+        showToast(added ? `${added} ta narx ro'yxatingizga qo'shildi ✓` : "Bu narxlar allaqachon ro'yxatingizda bor");
+    });
+
+    window.addEventListener('hashchange', checkIncomingShare);
 
     // ---------- PWA: telefon ekraniga o'rnatish uchun service worker ----------
     // faqat http(s) orqali ochilganda ishga tushadi — file:// orqali ochilganda brauzer buni qo'llab-quvvatlamaydi

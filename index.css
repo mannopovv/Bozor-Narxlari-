@@ -54,6 +54,24 @@ body,
     box-sizing: border-box;
 }
 
+/* ---------- keyboard-accessible focus ring ----------
+   Ilgari faqat matn kiritish maydonlari fokus holatini ko'rsatar edi;
+   klaviatura bilan tugmalar, tablar va havolalar orasida yurganda foydalanuvchi
+   qayerda turganini ko'ra olmasdi. Endi barcha interaktiv elementlar uchun
+   yagona, brend ranglariga mos fokus halqasi qo'shildi (faqat klaviaturada, sichqoncha bilan
+   bosganda ortiqcha halqa chiqmasligi uchun :focus-visible ishlatiladi). */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+.tab:focus-visible,
+.spark-wrap:focus-visible,
+[tabindex]:focus-visible {
+    outline: 2.5px solid var(--teal);
+    outline-offset: 2px;
+    border-radius: 8px;
+}
+
 html {
     scroll-behavior: smooth;
 }
@@ -2226,6 +2244,197 @@ footer button {
     text-align: right;
 }
 
+/* ---------- bozorlar xaritasi (haqiqiy OpenStreetMap xaritasi, Leaflet orqali) ---------- */
+.map-wrap {
+    background: var(--paper-2);
+    border: 2px solid var(--line);
+    border-radius: 16px;
+    padding: 8px;
+    margin-bottom: 16px;
+    position: relative;
+}
+
+#realMap {
+    width: 100%;
+    height: 340px;
+    border-radius: 12px;
+    background: var(--paper-2);
+    z-index: 0;
+}
+
+.map-offline-note {
+    margin-top: 8px;
+    font-size: 12.5px;
+    color: rgba(var(--ink-rgb), 0.7);
+    text-align: center;
+}
+
+/* Leaflet o'zining standart shriftini ishlatadi — buni ilova shriftlariga moslashtiramiz */
+.leaflet-container {
+    font-family: 'Inter', sans-serif;
+    border-radius: 12px;
+}
+
+.leaflet-bar,
+.leaflet-bar a {
+    background: var(--card-bg) !important;
+    color: var(--ink) !important;
+    border-color: var(--line-strong) !important;
+}
+
+.leaflet-bar a:hover {
+    background: var(--paper-2) !important;
+}
+
+/* tungi rejimda xarita pardasi (tayl rasmlari o'zgarmaydi, lekin butun xarita biroz qorong'ilashtiriladi
+   va foydalanuvchi interfeysi bilan uyg'unroq ko'rinadi) */
+html[data-theme="dark"] .leaflet-tile-pane {
+    filter: brightness(0.62) contrast(1.05) saturate(0.85) invert(1) hue-rotate(180deg);
+}
+
+.market-pin {
+    width: 30px;
+    height: 30px;
+    border-radius: 50% 50% 50% 0;
+    transform: rotate(-45deg);
+    border: 2.5px solid var(--card-bg);
+    box-shadow: 0 2px 6px rgba(var(--ink-rgb), 0.35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.market-pin span {
+    transform: rotate(45deg);
+    font-size: 14px;
+}
+
+.user-pin {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--teal);
+    border: 2.5px solid var(--card-bg);
+    box-shadow: 0 0 0 5px rgba(27, 75, 79, 0.25);
+}
+
+.map-popup-title {
+    font-weight: 700;
+    font-size: 13.5px;
+    margin-bottom: 2px;
+}
+
+.map-popup-line {
+    font-size: 12px;
+    color: rgba(var(--ink-rgb), 0.75);
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.map-popup-btn {
+    margin-top: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--teal);
+    cursor: pointer;
+    text-decoration: underline;
+    background: none;
+    border: none;
+    padding: 0;
+}
+
+.leaflet-popup-content-wrapper {
+    background: var(--card-bg);
+    color: var(--ink);
+    border-radius: 12px;
+}
+
+.leaflet-popup-tip {
+    background: var(--card-bg);
+}
+
+.map-legend {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: rgba(var(--ink-rgb), 0.7);
+    margin: 10px 4px 0;
+}
+
+.map-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.map-legend .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+/* ---------- byudjet rejalashtiruvchi ---------- */
+.budget-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.budget-progress-track {
+    height: 22px;
+    border-radius: 999px;
+    background: var(--paper-2);
+    border: 1.5px solid var(--line);
+    overflow: hidden;
+    position: relative;
+}
+
+.budget-progress-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: var(--olive);
+    transition: width 0.6s cubic-bezier(.2, .8, .2, 1), background-color 0.3s ease;
+}
+
+.budget-progress-fill.warn {
+    background: var(--saffron);
+}
+
+.budget-progress-fill.over {
+    background: var(--pomegranate);
+}
+
+.budget-progress-label {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--ink);
+    mix-blend-mode: difference;
+    filter: invert(1) grayscale(1) contrast(2);
+}
+
+.budget-line {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13.5px;
+}
+
+.budget-line b {
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.budget-note {
+    font-size: 12.5px;
+    color: rgba(var(--ink-rgb), 0.65);
+    line-height: 1.5;
+}
+
 /* ---------- leaderboard ---------- */
 .leaders-list {
     display: flex;
@@ -2422,12 +2631,102 @@ footer button {
     background: var(--up);
 }
 
+.dot-forecast {
+    background: var(--saffron);
+}
+
+.chart-forecast {
+    margin-top: 10px;
+    font-size: 13px;
+    color: rgba(var(--ink-rgb), 0.85);
+    background: rgba(232, 163, 61, 0.12);
+    border: 1.5px dashed var(--saffron);
+    border-radius: 10px;
+    padding: 8px 12px;
+}
+
+.chart-forecast b {
+    font-family: 'JetBrains Mono', monospace;
+}
+
 @media (max-width: 640px) {
+    #realMap {
+        height: 260px;
+    }
+
     .index-row {
         grid-template-columns: 100px 1fr 60px;
     }
 
     .movers-grid {
         grid-template-columns: 1fr 1fr;
+    }
+}
+
+/* ---------- do'stlar bilan ulashish (havola orqali) ---------- */
+.share-import-list {
+    max-height: 260px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+.share-import-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--paper-2);
+    border: 1.5px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 13px;
+}
+
+.share-import-row b {
+    font-family: 'JetBrains Mono', monospace;
+}
+
+/* ---------- ovozli buyruqlar ---------- */
+#voiceCmdBtn.listening {
+    background: var(--pomegranate);
+    color: var(--paper);
+    border-color: var(--pomegranate);
+    animation: voicePulse 1.2s ease-in-out infinite;
+}
+
+@keyframes voicePulse {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.6;
+    }
+}
+
+/* ---------- chekdan narx o'qish (OCR) ---------- */
+.mic-btn.busy {
+    opacity: 0.55;
+    pointer-events: none;
+}
+
+.mic-btn.busy::after {
+    content: '';
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(var(--ink-rgb), 0.3);
+    border-top-color: var(--ink);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
     }
 }

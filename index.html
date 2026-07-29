@@ -10,6 +10,8 @@
         href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;0,9..144,900;1,9..144,500&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap"
         rel="stylesheet">
     <link rel="stylesheet" href="index.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#1B4B4F">
     <meta name="mobile-web-app-capable" content="yes">
@@ -137,6 +139,10 @@
                 <button class="ghost-btn" id="toggleAlerts" title="Narx bo'yicha ogohlantirish">🔔 Ogohlantirish<span
                         class="count-pill" id="alertsCount" hidden>0</span></button>
                 <button class="ghost-btn" id="toggleIndex" title="Bozorlar narx indeksi">📊 Bozor indeksi</button>
+                <button class="ghost-btn" id="toggleBudget" title="Oylik byudjet rejalashtiruvchi">💰 Byudjet</button>
+                <button class="ghost-btn" id="toggleMap" title="Bozorlarni xaritada solishtirish">🗺️ Xarita</button>
+                <button class="ghost-btn" id="voiceCmdBtn" title="Ovozli buyruq bering">🎙️ Ovozli buyruq</button>
+                <button class="ghost-btn" id="shareLinkBtn" title="Narxlaringizni do'stlar bilan havola orqali ulashish">🔗 Ulashish</button>
                 <button class="ghost-btn" id="toggleLeaders" title="Faol foydalanuvchilar" hidden>🏅 Reyting</button>
                 <button class="add-btn" id="toggleAdd">+ Narx qo'shish</button>
             </div>
@@ -193,6 +199,38 @@
             </div>
         </div>
 
+        <div class="panel" id="budgetPanel">
+            <div class="panel-inner">
+                <div class="panel-title">Oylik byudjet rejalashtiruvchi</div>
+                <div class="form-note" style="margin-bottom:12px">Xarid ro'yxatingizdagi mahsulotlarni joriy
+                    o'rtacha narxlar asosida hisoblab, oylik byudjetingizga taqqoslaymiz.</div>
+                <div class="form-grid">
+                    <div class="field">
+                        <label>Oylik byudjet (so'm)</label>
+                        <input id="budgetInput" type="number" min="0" step="10000" placeholder="1500000">
+                    </div>
+                    <button class="submit-btn" id="budgetSaveBtn">Saqlash</button>
+                </div>
+                <div class="budget-summary" id="budgetSummary"></div>
+            </div>
+        </div>
+
+        <div class="panel" id="mapPanel">
+            <div class="panel-inner">
+                <div class="panel-title">Bozorlarni xaritada solishtirish</div>
+                <div class="form-note" style="margin-bottom:12px" id="mapNote">Har bir bozorning narx darajasi va
+                    (ruxsat bersangiz) sizgacha bo'lgan taxminiy masofa. Savatga mahsulot qo'shsangiz, xarita savat
+                    narxiga qarab yangilanadi.</div>
+                <button class="ghost-btn" id="locateBtn" style="margin-bottom:12px">📍 Joylashuvimni aniqlash</button>
+                <div class="map-wrap">
+                    <div id="realMap"></div>
+                    <div class="map-offline-note" id="mapOfflineNote" hidden>🗺️ Xarita rasmlarini yuklab bo'lmadi —
+                        internet aloqasini tekshiring. Pastdagi ro'yxat baribir ishlaydi.</div>
+                </div>
+                <div class="market-index-list" id="mapList"></div>
+            </div>
+        </div>
+
         <div class="panel" id="leadersPanel">
             <div class="panel-inner">
                 <div class="panel-title">Faol foydalanuvchilar reytingi</div>
@@ -239,6 +277,9 @@
                             <input id="inPrice" type="number" min="0" step="500" placeholder="15000">
                             <button type="button" class="mic-btn" id="micBtn"
                                 title="Ovoz orqali narx kiritish">🎤</button>
+                            <button type="button" class="mic-btn" id="ocrBtn"
+                                title="Chek yoki narx belgisi rasmidan narxni aniqlash">📷</button>
+                            <input type="file" id="ocrFileInput" accept="image/*" capture="environment" hidden>
                         </div>
                     </div>
                     <div class="field">
@@ -276,6 +317,25 @@
 
     <div class="toast" id="toast"></div>
     <div class="basket-bar" id="basketBar"></div>
+
+    <div class="chart-modal" id="shareImportModal">
+        <div class="chart-modal-inner" style="max-width:440px">
+            <button class="chart-close" id="shareImportClose">✕</button>
+            <div class="chart-modal-head">
+                <span class="chart-modal-icon">🔗</span>
+                <div>
+                    <div class="chart-modal-title">Do'stingiz narx ulashdi</div>
+                    <div class="chart-modal-sub" id="shareImportSub"></div>
+                </div>
+            </div>
+            <div class="share-import-list" id="shareImportList"></div>
+            <div class="form-grid" style="margin-top:14px">
+                <button class="submit-btn" id="shareImportAcceptBtn">Ro'yxatimga qo'shish</button>
+                <button class="ghost-btn" id="shareImportIgnoreBtn" style="width:100%">Kerak emas</button>
+            </div>
+        </div>
+    </div>
+
     <div class="chart-modal" id="chartModal">
         <div class="chart-modal-inner">
             <button class="chart-close" id="chartClose">✕</button>
@@ -290,13 +350,17 @@
                 <svg id="chartModalSvg" viewBox="0 0 700 320" preserveAspectRatio="xMidYMid meet"></svg>
                 <div class="chart-modal-tooltip" id="chartModalTooltip" hidden></div>
             </div>
+            <div class="chart-forecast" id="chartForecast"></div>
             <div class="chart-modal-legend">
                 <span><i class="dot dot-up"></i> Narx oshgan kun</span>
                 <span><i class="dot dot-down"></i> Narx tushgan kun</span>
+                <span><i class="dot dot-forecast"></i> Bashorat (taxminiy)</span>
             </div>
         </div>
     </div>
 
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
     <script src="index.js"></script>
 </body>
 
